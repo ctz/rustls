@@ -21,6 +21,13 @@ pub fn random_vec(len: usize) -> Vec<u8> {
     v
 }
 
+/// Return a uniformly random u8.
+pub fn random_u8() -> u8 {
+    let mut buf = [0u8; 1];
+    fill_random(&mut buf);
+    buf[0]
+}
+
 /// Return a uniformly random u32.
 pub fn random_u32() -> u32 {
     let mut buf = [0u8; 4];

@@ -23,6 +23,7 @@ default = ["logging"]
 logging = ["log"]
 dangerous_configuration = []
 quic = []
+grease = []
 
 [dev-dependencies]
 env_logger = "0.7.1"
