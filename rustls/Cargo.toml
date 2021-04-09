@@ -16,6 +16,7 @@ log = { version = "0.4.4", optional = true }
 ring = "0.16.19"
 sct = "0.6.0"
 webpki = "0.21.4"
+rustls-pemfile = "0.2.0"
 
 [features]
 default = ["logging"]
@@ -28,7 +29,6 @@ env_logger = "0.8.2"
 log = "0.4.4"
 webpki-roots = "0.21"
 criterion = "0.3.0"
-rustls-pemfile = "0.2.0"
 base64 = "0.13.0"
 
 [[example]]
