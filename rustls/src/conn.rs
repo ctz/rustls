@@ -6,6 +6,7 @@ use crate::log::{debug, error, trace, warn};
 use crate::msgs::base::Payload;
 use crate::msgs::codec::Codec;
 use crate::msgs::deframer::MessageDeframer;
+use crate::msgs::enums::CertificateCompressionAlgorithm;
 use crate::msgs::enums::{AlertDescription, AlertLevel, ContentType, ProtocolVersion};
 use crate::msgs::fragmenter::{MessageFragmenter, MAX_FRAGMENT_LEN};
 use crate::msgs::hsjoiner::HandshakeJoiner;
@@ -565,6 +566,7 @@ pub struct ConnectionCommon {
     received_plaintext: ChunkVecBuffer,
     sendable_plaintext: ChunkVecBuffer,
     pub sendable_tls: ChunkVecBuffer,
+    pub certificate_compression_algorithm: Option<CertificateCompressionAlgorithm>,
     /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
     pub protocol: Protocol,
     #[cfg(feature = "quic")]
@@ -591,6 +593,7 @@ impl ConnectionCommon {
             received_plaintext: ChunkVecBuffer::new(),
             sendable_plaintext: ChunkVecBuffer::new(),
             sendable_tls: ChunkVecBuffer::new(),
+            certificate_compression_algorithm: None,
             protocol: Protocol::Tls13,
             #[cfg(feature = "quic")]
             quic: Quic::new(),

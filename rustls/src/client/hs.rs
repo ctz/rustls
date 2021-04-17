@@ -294,6 +294,21 @@ fn emit_client_hello_for_retry(
         exts.push(ClientExtension::PresharedKeyModes(psk_modes));
     }
 
+    if support_tls13
+        && !conn
+            .config
+            .certificate_compression_algorithms
+            .is_empty()
+    {
+        exts.push(ClientExtension::CompressCertificate(
+            conn.config
+                .certificate_compression_algorithms
+                .iter()
+                .map(|v| v.alg)
+                .collect(),
+        ))
+    }
+
     if !conn.config.alpn_protocols.is_empty() {
         exts.push(ClientExtension::Protocols(ProtocolNameList::from_slices(
             &conn

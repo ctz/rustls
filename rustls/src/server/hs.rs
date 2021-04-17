@@ -7,6 +7,7 @@ use crate::log::{debug, trace};
 use crate::msgs::enums::{AlertDescription, ExtensionType};
 use crate::msgs::enums::{CipherSuite, Compression};
 use crate::msgs::enums::{ContentType, HandshakeType, ProtocolVersion};
+use crate::msgs::handshake::CertificateCompressionAlgorithmsExt;
 use crate::msgs::handshake::{ClientHelloPayload, ServerExtension};
 use crate::msgs::handshake::{ConvertProtocolNameList, ConvertServerNameList};
 use crate::msgs::handshake::{HandshakePayload, SupportedSignatureSchemes};
@@ -466,6 +467,16 @@ impl State for ExpectClientHello {
 
         debug!("decided upon suite {:?}", suite);
         conn.common.suite = Some(suite);
+
+        // check for duplicate compression algorithms
+        if let Some(c_algorithms) = client_hello.get_compress_certificate_extension() {
+            if c_algorithms.has_duplicate_algorithm() {
+                return Err(decode_error(
+                    conn,
+                    "client sent duplicate certificate compression algorithms",
+                ));
+            }
+        }
 
         // Start handshake hash.
         let starting_hash = suite.get_hash();

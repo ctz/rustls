@@ -296,7 +296,7 @@ mod client_hello {
                     server_key.get_cert(),
                     ocsp_response,
                     sct_list,
-                );
+                )?;
                 emit_certificate_verify_tls13(
                     &mut self.handshake,
                     conn,
@@ -587,7 +587,7 @@ mod client_hello {
         cert_chain: &[Certificate],
         ocsp_response: Option<&[u8]>,
         sct_list: Option<&[u8]>,
-    ) {
+    ) -> Result<(), Error> {
         let mut cert_entries = vec![];
         for cert in cert_chain {
             let entry = CertificateEntry {
@@ -617,18 +617,46 @@ mod client_hello {
         }
 
         let cert_body = CertificatePayloadTLS13::new(cert_entries);
+
+        let payload = if let Some(certificate_compression_algorithm) = conn
+            .common
+            .certificate_compression_algorithm
+            .as_ref()
+        {
+            let compressed_cert_body = if let Some(compress) = &conn
+                .config
+                .certificate_compression_algorithms
+                .iter()
+                .find(|cc| cc.alg == *certificate_compression_algorithm)
+                .map(|v| &v.compress)
+            {
+                cert_body.compress_with(*certificate_compression_algorithm, compress)
+            } else {
+                Err(Error::UnknownCertCompressionAlg)
+            }?;
+
+            MessagePayload::Handshake(HandshakeMessagePayload {
+                typ: HandshakeType::CompressedCertificate,
+                payload: HandshakePayload::CompressedCertificate(compressed_cert_body),
+            })
+        } else {
+            MessagePayload::Handshake(HandshakeMessagePayload {
+                typ: HandshakeType::Certificate,
+                payload: HandshakePayload::CertificateTLS13(cert_body),
+            })
+        };
+
         let c = Message {
             typ: ContentType::Handshake,
             version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::Certificate,
-                payload: HandshakePayload::CertificateTLS13(cert_body),
-            }),
+            payload,
         };
 
         trace!("sending certificate {:?}", c);
         handshake.transcript.add_message(&c);
         conn.common.send_msg(c, true);
+
+        Ok(())
     }
 
     fn emit_certificate_verify_tls13(
@@ -740,11 +768,45 @@ impl hs::State for ExpectCertificate {
         conn: &mut ServerConnection,
         m: Message,
     ) -> hs::NextStateOrError {
-        let certp = require_handshake_msg!(
-            m,
-            HandshakeType::Certificate,
-            HandshakePayload::CertificateTLS13
-        )?;
+        let decompressed_certp = if m.is_handshake_type(HandshakeType::CompressedCertificate) {
+            let compressed_cert_chain = require_handshake_msg!(
+                m,
+                HandshakeType::CompressedCertificate,
+                HandshakePayload::CompressedCertificate
+            )?;
+
+            let certp = if let Some(decompressor) = &conn
+                .config
+                .certificate_compression_algorithms
+                .iter()
+                .find(|cc| cc.alg == compressed_cert_chain.algorithm)
+                .map(|v| &v.decompress)
+            {
+                compressed_cert_chain.decompress(decompressor)
+            } else {
+                Err(Error::UnknownCertCompressionAlg)
+            };
+
+            if certp.is_err() {
+                conn.common
+                    .send_fatal_alert(AlertDescription::BadCertificate);
+            }
+
+            certp?
+        } else {
+            None
+        };
+
+        let certp = if let Some(certp) = decompressed_certp.as_ref() {
+            certp
+        } else {
+            require_handshake_msg!(
+                m,
+                HandshakeType::Certificate,
+                HandshakePayload::CertificateTLS13
+            )?
+        };
+
         self.handshake
             .transcript
             .add_message(&m);

@@ -19,6 +19,7 @@
 //! * TLS1.2 resumption via tickets ([RFC5077](https://tools.ietf.org/html/rfc5077)).
 //! * TLS1.3 resumption via tickets or session storage.
 //! * TLS1.3 0-RTT data for clients.
+//! * TLS1.3 certificate compression.
 //! * Client authentication by clients.
 //! * Client authentication by servers.
 //! * Extended master secret support ([RFC7627](https://tools.ietf.org/html/rfc7627)).
@@ -268,6 +269,7 @@ mod x509;
 mod check;
 mod bs_debug;
 mod client;
+mod compression;
 mod key;
 mod keylog;
 mod kx;
@@ -290,6 +292,7 @@ pub use crate::client::handy::{ClientSessionMemoryCache, NoClientSessionStorage}
 pub use crate::client::ResolvesClientCert;
 pub use crate::client::StoresClientSessions;
 pub use crate::client::{ClientConfig, ClientConnection, WriteEarlyData};
+pub use crate::compression::{CertificateCompress, CertificateCompression, CertificateDecompress};
 pub use crate::conn::{Connection, Reader, Writer};
 pub use crate::error::Error;
 pub use crate::error::WebPkiOp;
@@ -312,6 +315,7 @@ pub use crate::ticketer::Ticketer;
 pub use crate::verify::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
 };
+pub use msgs::enums::CertificateCompressionAlgorithm;
 
 /// All defined ciphersuites appear in this module.
 ///

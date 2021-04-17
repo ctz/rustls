@@ -95,6 +95,15 @@ pub enum Error {
     /// We failed to acquire random bytes from the system.
     FailedToGetRandomBytes,
 
+    /// We failed to perform certificate decompression
+    FailedCertificateDecompression,
+
+    /// We failed to perform certificate compression
+    FailedCertificateCompression,
+
+    /// Unknown certificate compression algorithm
+    UnknownCertCompressionAlg,
+
     /// This function doesn't work until the TLS handshake
     /// is complete.
     HandshakeNotComplete,
@@ -153,6 +162,15 @@ impl fmt::Display for Error {
             Error::InvalidSct(ref err) => write!(f, "invalid certificate timestamp: {:?}", err),
             Error::FailedToGetCurrentTime => write!(f, "failed to get current time"),
             Error::FailedToGetRandomBytes => write!(f, "failed to get random bytes"),
+            Error::FailedCertificateDecompression => {
+                write!(f, "failed to decompress certificate")
+            }
+            Error::FailedCertificateCompression => {
+                write!(f, "failed to compress certificate")
+            }
+            Error::UnknownCertCompressionAlg => {
+                write!(f, "unknown certificate compression algorithm")
+            }
             Error::General(ref err) => write!(f, "unexpected error: {}", err), // (please file a bug)
         }
     }

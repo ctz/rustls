@@ -1,3 +1,4 @@
+use crate::compression::CertificateCompression;
 use crate::conn::{
     Connection, ConnectionCommon, IoState, MessageType, PlaintextSink, Reader, Writer,
 };
@@ -108,6 +109,10 @@ pub struct ClientConfig {
     /// How to decide what client auth certificate/keys to use.
     pub client_auth_cert_resolver: Arc<dyn ResolvesClientCert>,
 
+    /// Certificate compression algorithms.
+    /// If None, certificate compression won't be enabled
+    pub certificate_compression_algorithms: Vec<Arc<CertificateCompression>>,
+
     /// Whether to support RFC5077 tickets.  You must provide a working
     /// `session_persistence` member for this to have any meaningful
     /// effect.
@@ -189,6 +194,7 @@ impl ClientConfig {
             session_persistence: handy::ClientSessionMemoryCache::new(32),
             mtu: None,
             client_auth_cert_resolver: Arc::new(handy::FailResolveClientCert {}),
+            certificate_compression_algorithms: Vec::new(),
             enable_tickets: true,
             versions: vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
             enable_sni: true,

@@ -33,15 +33,15 @@ if disabled_tests:
     for disabled_glob in sorted(config['DisabledTests'].keys()):
         tests_matching_glob = fnmatch.filter(disabled_tests, disabled_glob)
         if not tests_matching_glob:
-            print 'DisabledTests glob', disabled_glob, 'matches no tests'
+            print('DisabledTests glob', disabled_glob, 'matches no tests')
 else:
-    print '(DisabledTests unchecked)'
+    print('(DisabledTests unchecked)')
 
-print len(all_tests), 'total tests'
-print len(passed_tests), 'passed'
-print len(failing_tests), 'tests failing'
-print len(unimpl_tests), 'tests not supported'
+print(len(all_tests), 'total tests')
+print(len(passed_tests), 'passed')
+print(len(failing_tests), 'tests failing')
+print(len(unimpl_tests), 'tests not supported')
 
 if test_error_set:
-    print 'unknown TestErrorMap keys', test_error_set
+    print('unknown TestErrorMap keys', test_error_set)
 

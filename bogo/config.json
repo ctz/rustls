@@ -30,8 +30,6 @@
     "EchoTLS13CompatibilitySessionID": "",
     "ClientOCSPCallback*": "ocsp not supported yet",
     "ServerOCSPCallback*": "",
-    "CertCompression*": "not implemented",
-    "DuplicateCertCompressionExt*": "",
     "ECH-*": "",
     "ALPS-*": "",
     "ExtraClientEncryptedExtension-TLS-TLS13": "uses ALPS",
@@ -135,6 +133,11 @@
     ":ENCRYPTED_LENGTH_TOO_LONG:": ":GARBAGE:"
   },
   "TestErrorMap": {
+    "CertCompressionTooLargeClient-TLS13": ":CERT_DECOMPRESSION_FAILED:",
+    "DuplicateCertCompressionExt-TLS12": ":PEER_MISBEHAVIOUR:",
+    "DuplicateCertCompressionExt2-TLS12": ":PEER_MISBEHAVIOUR:",
+    "DuplicateCertCompressionExt-TLS13": ":PEER_MISBEHAVIOUR:",
+    "DuplicateCertCompressionExt2-TLS13": ":PEER_MISBEHAVIOUR:",
     "EmptyCertificateList": ":NO_CERTS:",
     "SendInvalidRecordType": ":GARBAGE:",
     "NoSharedCipher": ":HANDSHAKE_FAILURE:",

@@ -1,3 +1,4 @@
+use crate::compression::CertificateCompression;
 use crate::conn::{
     Connection, ConnectionCommon, IoState, MessageType, PlaintextSink, Reader, Writer,
 };
@@ -177,6 +178,10 @@ pub struct ServerConfig {
     /// How to choose a server cert and key.
     pub cert_resolver: Arc<dyn ResolvesServerCert>,
 
+    /// Certificate compression algorithms.
+    /// Added in order of preference.
+    pub certificate_compression_algorithms: Vec<Arc<CertificateCompression>>,
+
     /// Protocol names we support, most preferred first.
     /// If empty we don't do ALPN at all.
     pub alpn_protocols: Vec<Vec<u8>>,
@@ -242,6 +247,7 @@ impl ServerConfig {
             ticketer: Arc::new(handy::NeverProducesTickets {}),
             alpn_protocols: Vec::new(),
             cert_resolver: Arc::new(handy::FailResolveChain {}),
+            certificate_compression_algorithms: Vec::new(),
             versions: vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
             verifier: client_cert_verifier,
             key_log: Arc::new(NoKeyLog {}),

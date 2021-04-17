@@ -14,6 +14,10 @@ use rustls::quic;
 use rustls::quic::ClientQuicExt;
 use rustls::quic::ServerQuicExt;
 use rustls::ClientHello;
+use rustls::{
+    CertificateCompress, CertificateCompression, CertificateCompressionAlgorithm,
+    CertificateDecompress,
+};
 use std::env;
 use std::fs;
 use std::io;
@@ -77,6 +81,7 @@ struct Options {
     expect_accept_early_data: bool,
     expect_reject_early_data: bool,
     expect_version: u16,
+    install_cert_compression_algs: bool,
 }
 
 impl Options {
@@ -124,6 +129,7 @@ impl Options {
             expect_accept_early_data: false,
             expect_reject_early_data: false,
             expect_version: 0,
+            install_cert_compression_algs: false,
         }
     }
 
@@ -159,6 +165,58 @@ fn load_key(filename: &str) -> rustls::PrivateKey {
     let keys = rustls_pemfile::pkcs8_private_keys(&mut reader).unwrap();
     assert!(keys.len() == 1);
     rustls::PrivateKey(keys[0].clone())
+}
+
+fn get_certificate_compression_algorithms() -> Vec<Arc<CertificateCompression>> {
+    let mut cc_algs = Vec::new();
+
+    // Add `expanding` algorithm
+    // https://github.com/google/boringssl/blob/a2278d4d2cabe73f6663e3299ea7808edfa306b9/ssl/test/runner/runner.go#L15930
+    //
+    // expanding_prefix is just some arbitrary byte string. This has to match the value in the shim.
+    let expanding_prefix = [1, 2, 3, 4].as_ref();
+    cc_algs.push(Arc::new(CertificateCompression {
+        alg: CertificateCompressionAlgorithm::Unknown(0xff02),
+        compress: CertificateCompress::new(Box::new(move |writer: Vec<u8>, input: &[u8]| {
+            let mut w = writer;
+            w.extend_from_slice(expanding_prefix);
+            w.extend_from_slice(input);
+
+            Ok(w)
+        })),
+        decompress: CertificateDecompress::new(Box::new(move |_writer: Vec<u8>, input: &[u8]| {
+            if !input.starts_with(expanding_prefix) {
+                panic!("cannot decompress certificate message {:x?}", input);
+            }
+
+            Ok(input[expanding_prefix.len()..].to_vec())
+        })),
+    }));
+
+    // Add `shrinking` algorithm
+    // https://github.com/google/boringssl/blob/a2278d4d2cabe73f6663e3299ea7808edfa306b9/ssl/test/runner/runner.go#L15912
+    //
+    // shrinking_prefix is the first two bytes of a Certificate message
+    let shrinking_prefix = [0, 0].as_ref();
+    cc_algs.push(Arc::new(CertificateCompression {
+        alg: CertificateCompressionAlgorithm::Unknown(0xff01),
+        compress: CertificateCompress::new(Box::new(move |_writer: Vec<u8>, input: &[u8]| {
+            if !input.starts_with(&shrinking_prefix) {
+                panic!("cannot compress certificate message {:x?}", input);
+            }
+
+            Ok(input[shrinking_prefix.len()..].to_vec())
+        })),
+        decompress: CertificateDecompress::new(Box::new(move |writer: Vec<u8>, input: &[u8]| {
+            let mut w = writer;
+            w.extend_from_slice(shrinking_prefix);
+            w.extend_from_slice(input);
+
+            Ok(w)
+        })),
+    }));
+
+    cc_algs
 }
 
 fn split_protocols(protos: &str) -> Vec<String> {
@@ -394,6 +452,10 @@ fn make_server_cfg(opts: &Options) -> Arc<rustls::ServerConfig> {
             .collect();
     }
 
+    if opts.install_cert_compression_algs {
+        cfg.certificate_compression_algorithms = get_certificate_compression_algorithms();
+    }
+
     Arc::new(cfg)
 }
 
@@ -481,6 +543,10 @@ fn make_client_cfg(opts: &Options) -> Arc<rustls::ClientConfig> {
             .collect();
     }
 
+    if opts.install_cert_compression_algs {
+        cfg.certificate_compression_algorithms = get_certificate_compression_algorithms();
+    }
+
     Arc::new(cfg)
 }
 
@@ -537,6 +603,8 @@ fn handle_err(err: rustls::Error) -> ! {
             quit(":WRONG_SIGNATURE_TYPE:")
         }
         Error::PeerSentOversizedRecord => quit(":DATA_LENGTH_TOO_LONG:"),
+        Error::FailedCertificateDecompression => quit(":CERT_DECOMPRESSION_FAILED:"),
+        Error::UnknownCertCompressionAlg => quit(":UNKNOWN_CERT_COMPRESSION_ALG:"),
         _ => {
             println_err!("unhandled error: {:?}", err);
             quit(":FIXME:")
@@ -980,6 +1048,9 @@ fn main() {
                 } else {
                     opts.curves = Some(vec![ curve ]);
                 }
+            }
+            "-install-cert-compression-algs" => {
+                opts.install_cert_compression_algs = true;
             }
 
             // defaults:

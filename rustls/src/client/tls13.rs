@@ -524,11 +524,48 @@ impl hs::State for ExpectCertificate {
         conn: &mut ClientConnection,
         m: Message,
     ) -> hs::NextStateOrError {
-        let cert_chain = require_handshake_msg!(
-            m,
-            HandshakeType::Certificate,
-            HandshakePayload::CertificateTLS13
-        )?;
+        let decompressed_cert_chain = if m.is_handshake_type(HandshakeType::CompressedCertificate) {
+            let compressed_cert_chain = require_handshake_msg!(
+                m,
+                HandshakeType::CompressedCertificate,
+                HandshakePayload::CompressedCertificate
+            )?;
+
+            conn.common
+                .certificate_compression_algorithm = Some(compressed_cert_chain.algorithm);
+
+            let cert_chain = if let Some(decompress) = &conn
+                .config
+                .certificate_compression_algorithms
+                .iter()
+                .find(|cc| cc.alg == compressed_cert_chain.algorithm)
+                .map(|v| &v.decompress)
+            {
+                compressed_cert_chain.decompress(decompress)
+            } else {
+                Err(Error::UnknownCertCompressionAlg)
+            };
+
+            if cert_chain.is_err() {
+                conn.common
+                    .send_fatal_alert(AlertDescription::BadCertificate);
+            }
+
+            cert_chain?
+        } else {
+            None
+        };
+
+        let cert_chain = if let Some(cert_chain) = decompressed_cert_chain.as_ref() {
+            cert_chain
+        } else {
+            require_handshake_msg!(
+                m,
+                HandshakeType::Certificate,
+                HandshakePayload::CertificateTLS13
+            )?
+        };
+
         self.transcript.add_message(&m);
 
         // This is only non-empty for client auth.
@@ -598,10 +635,13 @@ impl hs::State for ExpectCertificateOrCertReq {
             &[ContentType::Handshake],
             &[
                 HandshakeType::Certificate,
+                HandshakeType::CompressedCertificate,
                 HandshakeType::CertificateRequest,
             ],
         )?;
-        if m.is_handshake_type(HandshakeType::Certificate) {
+        if m.is_handshake_type(HandshakeType::Certificate)
+            || m.is_handshake_type(HandshakeType::CompressedCertificate)
+        {
             Box::new(ExpectCertificate {
                 dns_name: self.dns_name,
                 randoms: self.randoms,
@@ -820,7 +860,7 @@ fn emit_certificate_tls13(
     transcript: &mut HandshakeHash,
     client_auth: &mut ClientAuthDetails,
     conn: &mut ClientConnection,
-) {
+) -> Result<(), Error> {
     let context = client_auth
         .auth_context
         .take()
@@ -839,16 +879,44 @@ fn emit_certificate_tls13(
         }
     }
 
+
+    let payload = if let Some(certificate_compression_algorithm) = conn
+        .common
+        .certificate_compression_algorithm
+    {
+        let compressed_cert_payload = if let Some(compressor) = &conn
+            .config
+            .certificate_compression_algorithms
+            .iter()
+            .find(|cc| cc.alg == certificate_compression_algorithm)
+            .map(|v| &v.compress)
+        {
+            cert_payload.compress_with(certificate_compression_algorithm, compressor)
+        } else {
+            Err(Error::UnknownCertCompressionAlg)
+        }?;
+
+        MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::CompressedCertificate,
+            payload: HandshakePayload::CompressedCertificate(compressed_cert_payload),
+        })
+    } else {
+        MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::Certificate,
+            payload: HandshakePayload::CertificateTLS13(cert_payload),
+        })
+    };
+
     let m = Message {
         typ: ContentType::Handshake,
         version: ProtocolVersion::TLSv1_3,
-        payload: MessagePayload::Handshake(HandshakeMessagePayload {
-            typ: HandshakeType::Certificate,
-            payload: HandshakePayload::CertificateTLS13(cert_payload),
-        }),
+        payload,
     };
+
     transcript.add_message(&m);
     conn.common.send_msg(m, true);
+
+    Ok(())
 }
 
 fn emit_certverify_tls13(
@@ -986,7 +1054,7 @@ impl hs::State for ExpectFinished {
         /* Send our authentication/finished messages.  These are still encrypted
          * with our handshake keys. */
         if let Some(client_auth) = &mut st.client_auth {
-            emit_certificate_tls13(&mut st.transcript, client_auth, conn);
+            emit_certificate_tls13(&mut st.transcript, client_auth, conn)?;
             emit_certverify_tls13(&mut st.transcript, client_auth, conn)?;
         }
 
