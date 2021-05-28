@@ -5,6 +5,7 @@ use crate::keylog::KeyLog;
 use crate::kx::SupportedKxGroup;
 #[cfg(feature = "logging")]
 use crate::log::trace;
+use crate::msgs::ech::EncryptedClientHello;
 #[cfg(feature = "quic")]
 use crate::msgs::enums::AlertDescription;
 use crate::msgs::enums::CipherSuite;
@@ -23,6 +24,7 @@ use std::fmt;
 use std::io::{self, IoSlice};
 use std::mem;
 use std::sync::Arc;
+use webpki;
 
 #[macro_use]
 mod hs;
@@ -303,6 +305,33 @@ impl<'a> io::Write for WriteEarlyData<'a> {
     }
 }
 
+/// Ways to identify the server the client is connecting to.
+pub enum ServerIdentity {
+    /// Using a DNS name
+    Hostname(webpki::DnsName),
+    /// Using an EncryptedClientHello (Inner and Outer DNS names)
+    EncryptedClientHello(Box<EncryptedClientHello>),
+}
+
+impl ServerIdentity {
+    fn get_outer_hostname(&self) -> webpki::DnsNameRef {
+        match self {
+            ServerIdentity::Hostname(name) => name.as_ref(),
+            ServerIdentity::EncryptedClientHello(encrypted) => encrypted
+                .config_contents
+                .public_name
+                .as_ref(),
+        }
+    }
+
+    fn get_inner_hostname(&self) -> webpki::DnsNameRef {
+        match self {
+            ServerIdentity::Hostname(name) => name.as_ref(),
+            ServerIdentity::EncryptedClientHello(encrypted) => encrypted.hostname.as_ref(),
+        }
+    }
+}
+
 /// This represents a single TLS client connection.
 pub struct ClientConnection {
     common: ConnectionCommon,
@@ -323,17 +352,32 @@ impl ClientConnection {
     /// hostname of who we want to talk to.
     pub fn new(
         config: Arc<ClientConfig>,
-        hostname: webpki::DnsNameRef,
+        dns_name: webpki::DnsNameRef,
     ) -> Result<ClientConnection, Error> {
-        Self::new_inner(config, hostname, Vec::new(), Protocol::Tcp)
+        Self::with_server_id(config, ServerIdentity::Hostname(dns_name.to_owned()))
+    }
+
+    /// Make a new ClientConnection.  `config` controls how
+    /// we behave in the TLS protocol, `hello` configures the host we want to talk to.
+    pub fn with_server_id(
+        config: Arc<ClientConfig>,
+        server_id: ServerIdentity,
+    ) -> Result<ClientConnection, Error> {
+        Self::new_inner(config, server_id, Vec::new(), Protocol::Tcp)
     }
 
     fn new_inner(
         config: Arc<ClientConfig>,
-        hostname: webpki::DnsNameRef,
+        server_id: ServerIdentity,
         extra_exts: Vec<ClientExtension>,
         proto: Protocol,
     ) -> Result<Self, Error> {
+        if let ServerIdentity::EncryptedClientHello(_h) = &server_id {
+            if !config.supports_version(ProtocolVersion::TLSv1_3) {
+                return Err(Error::General("TLS 1.3 support is required for ECH".into()));
+            }
+        }
+
         let mut new = ClientConnection {
             common: ConnectionCommon::new(config.max_fragment_size, true)?,
             state: None,
@@ -346,12 +390,7 @@ impl ClientConnection {
             data: &mut new.data,
         };
 
-        new.state = Some(hs::start_handshake(
-            hostname.into(),
-            extra_exts,
-            config,
-            &mut cx,
-        )?);
+        new.state = Some(hs::start_handshake(server_id, extra_exts, config, &mut cx)?);
         Ok(new)
     }
 
@@ -577,6 +616,23 @@ pub trait ClientQuicExt {
         hostname: webpki::DnsNameRef,
         params: Vec<u8>,
     ) -> Result<ClientConnection, Error> {
+        Self::quic_with_server_id(
+            config,
+            quic_version,
+            ServerIdentity::Hostname(hostname.to_owned()),
+            params,
+        )
+    }
+
+    /// Make a new QUIC ClientConnection. This differs from `ClientConnection::new()`
+    /// in that it takes an extra argument, `params`, which contains the
+    /// TLS-encoded transport parameters to send.
+    fn quic_with_server_id(
+        config: Arc<ClientConfig>,
+        quic_version: quic::Version,
+        server_id: ServerIdentity,
+        params: Vec<u8>,
+    ) -> Result<ClientConnection, Error> {
         if !config.supports_version(ProtocolVersion::TLSv1_3) {
             return Err(Error::General(
                 "TLS 1.3 support is required for QUIC".into(),
@@ -588,7 +644,7 @@ pub trait ClientQuicExt {
             quic::Version::V1 => ClientExtension::TransportParameters(params),
         };
 
-        ClientConnection::new_inner(config, hostname, vec![ext], Protocol::Quic)
+        ClientConnection::new_inner(config, server_id, vec![ext], Protocol::Quic)
     }
 }
 

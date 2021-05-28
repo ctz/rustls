@@ -6,6 +6,7 @@ use crate::msgs::enums::ECCurveType;
 use crate::msgs::enums::PSKKeyExchangeMode;
 use crate::msgs::enums::{CertificateStatusType, ClientCertificateType};
 use crate::msgs::enums::{CipherSuite, Compression, ECPointFormat, ExtensionType};
+use crate::msgs::enums::{EchVersion, AEAD, KDF, KEM};
 use crate::msgs::enums::{HandshakeType, ProtocolVersion};
 use crate::msgs::enums::{HashAlgorithm, ServerNameType, SignatureAlgorithm};
 use crate::msgs::enums::{KeyUpdateRequest, NamedGroup, SignatureScheme};
@@ -541,6 +542,7 @@ pub type SCTList = VecU16OfPayloadU16;
 declare_u8_vec!(PSKKeyExchangeModes, PSKKeyExchangeMode);
 declare_u16_vec!(KeyShareEntries, KeyShareEntry);
 declare_u8_vec!(ProtocolVersions, ProtocolVersion);
+declare_u8_vec!(OuterExtensions, ExtensionType);
 
 #[derive(Clone, Debug)]
 pub enum ClientExtension {
@@ -561,6 +563,9 @@ pub enum ClientExtension {
     SignedCertificateTimestampRequest,
     TransportParameters(Vec<u8>),
     TransportParametersDraft(Vec<u8>),
+    EncryptedClientHello(ClientEch),
+    EchOuterExtensions(OuterExtensions),
+    ClientHelloInnerIndication,
     EarlyData,
     Unknown(UnknownExtension),
 }
@@ -586,6 +591,9 @@ impl ClientExtension {
             ClientExtension::SignedCertificateTimestampRequest => ExtensionType::SCT,
             ClientExtension::TransportParameters(_) => ExtensionType::TransportParameters,
             ClientExtension::TransportParametersDraft(_) => ExtensionType::TransportParametersDraft,
+            ClientExtension::EncryptedClientHello(_) => ExtensionType::EncryptedClientHello,
+            ClientExtension::EchOuterExtensions(_) => ExtensionType::EchOuterExtensions,
+            ClientExtension::ClientHelloInnerIndication => ExtensionType::EchIsInner,
             ClientExtension::EarlyData => ExtensionType::EarlyData,
             ClientExtension::Unknown(ref r) => r.typ,
         }
@@ -605,6 +613,7 @@ impl Codec for ClientExtension {
             ClientExtension::SessionTicketRequest
             | ClientExtension::ExtendedMasterSecretRequest
             | ClientExtension::SignedCertificateTimestampRequest
+            | ClientExtension::ClientHelloInnerIndication
             | ClientExtension::EarlyData => {}
             ClientExtension::SessionTicketOffer(ref r) => r.encode(&mut sub),
             ClientExtension::Protocols(ref r) => r.encode(&mut sub),
@@ -616,6 +625,8 @@ impl Codec for ClientExtension {
             ClientExtension::CertificateStatusRequest(ref r) => r.encode(&mut sub),
             ClientExtension::TransportParameters(ref r)
             | ClientExtension::TransportParametersDraft(ref r) => sub.extend_from_slice(r),
+            ClientExtension::EncryptedClientHello(ref r) => r.encode(&mut sub),
+            ClientExtension::EchOuterExtensions(ref r) => r.encode(&mut sub),
             ClientExtension::Unknown(ref r) => r.encode(&mut sub),
         }
 
@@ -680,6 +691,13 @@ impl Codec for ClientExtension {
             ExtensionType::TransportParametersDraft => {
                 ClientExtension::TransportParametersDraft(sub.rest().to_vec())
             }
+            ExtensionType::EncryptedClientHello => {
+                ClientExtension::EncryptedClientHello(ClientEch::read(&mut sub)?)
+            }
+            ExtensionType::EchOuterExtensions => {
+                ClientExtension::EchOuterExtensions(OuterExtensions::read(&mut sub)?)
+            }
+            ExtensionType::EchIsInner => ClientExtension::ClientHelloInnerIndication,
             ExtensionType::EarlyData if !sub.any_left() => ClientExtension::EarlyData,
             _ => ClientExtension::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
@@ -730,6 +748,7 @@ pub enum ServerExtension {
     SupportedVersions(ProtocolVersion),
     TransportParameters(Vec<u8>),
     TransportParametersDraft(Vec<u8>),
+    EncryptedClientHello(ServerEch),
     EarlyData,
     Unknown(UnknownExtension),
 }
@@ -750,6 +769,7 @@ impl ServerExtension {
             ServerExtension::SupportedVersions(_) => ExtensionType::SupportedVersions,
             ServerExtension::TransportParameters(_) => ExtensionType::TransportParameters,
             ServerExtension::TransportParametersDraft(_) => ExtensionType::TransportParametersDraft,
+            ServerExtension::EncryptedClientHello(_) => ExtensionType::EncryptedClientHello,
             ServerExtension::EarlyData => ExtensionType::EarlyData,
             ServerExtension::Unknown(ref r) => r.typ,
         }
@@ -776,6 +796,7 @@ impl Codec for ServerExtension {
             ServerExtension::SupportedVersions(ref r) => r.encode(&mut sub),
             ServerExtension::TransportParameters(ref r)
             | ServerExtension::TransportParametersDraft(ref r) => sub.extend_from_slice(r),
+            ServerExtension::EncryptedClientHello(ref r) => r.encode(&mut sub),
             ServerExtension::Unknown(ref r) => r.encode(&mut sub),
         }
 
@@ -817,6 +838,9 @@ impl Codec for ServerExtension {
             ExtensionType::TransportParametersDraft => {
                 ServerExtension::TransportParametersDraft(sub.rest().to_vec())
             }
+            ExtensionType::EncryptedClientHello => {
+                ServerExtension::EncryptedClientHello(ServerEch::read(&mut sub)?)
+            }
             ExtensionType::EarlyData => ServerExtension::EarlyData,
             _ => ServerExtension::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
@@ -841,7 +865,7 @@ impl ServerExtension {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClientHelloPayload {
     pub client_version: ProtocolVersion,
     pub random: Random,
@@ -1281,6 +1305,19 @@ impl ServerHelloPayload {
             ServerExtension::SupportedVersions(vers) => Some(vers),
             _ => None,
         }
+    }
+
+    pub fn encode_for_ech_confirmation(&self, bytes: &mut Vec<u8>) {
+        self.legacy_version.encode(bytes);
+
+        let rand_vec = self.random.get_encoding();
+        bytes.extend_from_slice(&rand_vec.as_slice()[..24]);
+        bytes.extend_from_slice(&[0u8; 8]);
+
+        self.session_id.encode(bytes);
+        self.cipher_suite.encode(bytes);
+        self.compression_method.encode(bytes);
+        codec::encode_vec_u16(bytes, &self.extensions);
     }
 }
 
@@ -2314,5 +2351,191 @@ impl HandshakeMessagePayload {
             typ: HandshakeType::MessageHash,
             payload: HandshakePayload::MessageHash(Payload::new(hash.to_vec())),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HpkeSymmetricCipherSuite {
+    pub hpke_kdf_id: KDF,
+    pub hpke_aead_id: AEAD,
+}
+
+impl HpkeSymmetricCipherSuite {
+    // TODO: revisit the default configuration. This is just what Cloudflare ships right now.
+    pub fn default() -> HpkeSymmetricCipherSuite {
+        HpkeSymmetricCipherSuite {
+            hpke_kdf_id: KDF::HKDF_SHA256,
+            hpke_aead_id: AEAD::AES_128_GCM,
+        }
+    }
+}
+
+impl Codec for HpkeSymmetricCipherSuite {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.hpke_kdf_id.encode(bytes);
+        self.hpke_aead_id.encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<HpkeSymmetricCipherSuite> {
+        Some(HpkeSymmetricCipherSuite {
+            hpke_kdf_id: KDF::read(r)?,
+            hpke_aead_id: AEAD::read(r)?,
+        })
+    }
+}
+
+declare_u16_vec!(HpkeSymmetricCipherSuites, HpkeSymmetricCipherSuite);
+
+#[derive(Clone, Debug)]
+pub struct HpkeKeyConfig {
+    pub config_id: u8,
+    pub hpke_kem_id: KEM,
+    pub hpke_public_key: PayloadU16,
+    pub hpke_symmetric_cipher_suites: HpkeSymmetricCipherSuites,
+}
+
+impl Codec for HpkeKeyConfig {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.config_id.encode(bytes);
+        self.hpke_kem_id.encode(bytes);
+        self.hpke_public_key.encode(bytes);
+        self.hpke_symmetric_cipher_suites
+            .encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<HpkeKeyConfig> {
+        Some(HpkeKeyConfig {
+            config_id: u8::read(r)?,
+            hpke_kem_id: KEM::read(r)?,
+            hpke_public_key: PayloadU16::read(r)?,
+            hpke_symmetric_cipher_suites: HpkeSymmetricCipherSuites::read(r)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EchConfigContents {
+    pub hpke_key_config: HpkeKeyConfig,
+    pub maximum_name_length: u16,
+    pub public_name: webpki::DnsName,
+    pub extensions: PayloadU16,
+}
+
+impl Codec for EchConfigContents {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.hpke_key_config.encode(bytes);
+        self.maximum_name_length.encode(bytes);
+        PayloadU16::encode_slice(self.public_name.as_ref().as_ref(), bytes);
+        self.extensions.encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<EchConfigContents> {
+        Some(EchConfigContents {
+            hpke_key_config: HpkeKeyConfig::read(r)?,
+            maximum_name_length: u16::read(r)?,
+            public_name: webpki::DnsName::from({
+                let payload = PayloadU16::read(r)?;
+                webpki::DnsNameRef::try_from_ascii(payload.into_inner().as_slice()).ok()?
+            }),
+            extensions: PayloadU16::read(r)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EchConfig {
+    pub version: EchVersion,
+    pub contents: EchConfigContents,
+}
+
+impl Codec for EchConfig {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.version.encode(bytes);
+        let mut contents = Vec::with_capacity(128);
+        self.contents.encode(&mut contents);
+        let length: &mut [u8; 2] = &mut [0, 0];
+        codec::put_u16(contents.len() as u16, length);
+        bytes.extend_from_slice(length);
+        bytes.extend(contents);
+    }
+
+    fn read(r: &mut Reader) -> Option<EchConfig> {
+        let version = EchVersion::read(r)?;
+        let length = u16::read(r)?;
+        Some(EchConfig {
+            version,
+            contents: EchConfigContents::read(&mut r.sub(length as usize)?)?,
+        })
+    }
+}
+
+declare_u16_vec!(EchConfigList, EchConfig);
+
+#[derive(Clone, Debug)]
+pub struct ClientEch {
+    pub cipher_suite: HpkeSymmetricCipherSuite,
+    pub config_id: u8,
+    pub enc: PayloadU16,
+    pub payload: PayloadU16,
+}
+
+impl Codec for ClientEch {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.cipher_suite.encode(bytes);
+        self.config_id.encode(bytes);
+        self.enc.encode(bytes);
+        self.payload.encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<ClientEch> {
+        Some(ClientEch {
+            cipher_suite: HpkeSymmetricCipherSuite::read(r)?,
+            config_id: u8::read(r)?,
+            enc: PayloadU16::read(r)?,
+            payload: PayloadU16::read(r)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerEch {
+    pub(crate) retry_configs: EchConfigList,
+}
+
+impl Codec for ServerEch {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.retry_configs.encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<ServerEch> {
+        Some(ServerEch {
+            retry_configs: EchConfigList::read(r)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientHelloOuterAAD {
+    pub cipher_suite: HpkeSymmetricCipherSuite,
+    pub config_id: u8,
+    pub enc: PayloadU16,
+    pub outer_hello: PayloadU24,
+}
+
+impl Codec for ClientHelloOuterAAD {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.cipher_suite.encode(bytes);
+        self.config_id.encode(bytes);
+        self.enc.encode(bytes);
+        self.outer_hello.encode(bytes);
+    }
+
+    fn read(r: &mut Reader) -> Option<ClientHelloOuterAAD> {
+        Some(ClientHelloOuterAAD {
+            cipher_suite: HpkeSymmetricCipherSuite::read(r)?,
+            config_id: u8::read(r)?,
+            enc: PayloadU16::read(r)?,
+            outer_hello: PayloadU24::read(r)?,
+        })
     }
 }

@@ -6,7 +6,6 @@ use crate::key_schedule::{
     KeyScheduleEarly, KeyScheduleHandshake, KeyScheduleNonSecret, KeyScheduleTraffic,
     KeyScheduleTrafficWithClientFinishedPending,
 };
-use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
@@ -29,6 +28,7 @@ use crate::verify;
 use crate::{cipher, SupportedCipherSuite};
 #[cfg(feature = "quic")]
 use crate::{conn::Protocol, msgs::base::PayloadU16, quic};
+use crate::{kx, ServerIdentity};
 use crate::{sign, KeyLog};
 
 use super::hs::ClientContext;
@@ -59,14 +59,15 @@ static DISALLOWED_TLS13_EXTS: &[ExtensionType] = &[
 ];
 
 pub(super) fn handle_server_hello(
+    server_message: Vec<u8>,
     config: Arc<ClientConfig>,
     cx: &mut ClientContext,
     server_hello: &ServerHelloPayload,
     mut resuming_session: Option<persist::ClientSessionValueWithResolvedCipherSuite>,
-    dns_name: webpki::DnsName,
-    randoms: ConnectionRandoms,
+    server_id: ServerIdentity,
+    mut randoms: ConnectionRandoms,
     suite: &'static SupportedCipherSuite,
-    transcript: HandshakeHash,
+    mut transcript: HandshakeHash,
     early_key_schedule: Option<KeyScheduleEarly>,
     hello: ClientHelloDetails,
     our_key_share: kx::KeyExchange,
@@ -134,7 +135,6 @@ pub(super) fn handle_server_hello(
         }
         early_key_schedule.into_handshake(&shared.shared_secret)
     } else {
-        debug!("Not resuming");
         // Discard the early data key schedule.
         cx.data.early_data.rejected();
         cx.common.early_traffic = false;
@@ -143,11 +143,28 @@ pub(super) fn handle_server_hello(
     };
 
     // Remember what KX group the server liked for next time.
-    save_kx_hint(&config, dns_name.as_ref(), their_key_share.group);
+    save_kx_hint(
+        &config,
+        server_id.get_inner_hostname(),
+        their_key_share.group,
+    );
 
     // If we change keying when a subsequent handshake message is being joined,
     // the two halves will have different record layer protections.  Disallow this.
     cx.common.check_aligned_handshake()?;
+
+    let (client_random, mut transcript) = match &server_id {
+        ServerIdentity::Hostname(_) => {
+            transcript.start_hash(suite.get_hash());
+            (randoms.client, transcript)
+        }
+        ServerIdentity::EncryptedClientHello(ech) => {
+            ech.confirm_ech(&mut key_schedule, server_hello, suite)?
+        }
+    };
+    randoms.client = client_random;
+
+    transcript.update_raw(&*server_message);
 
     let hash_at_client_recvd_server_hello = transcript.get_current_hash();
 
@@ -194,7 +211,7 @@ pub(super) fn handle_server_hello(
     Ok(Box::new(ExpectEncryptedExtensions {
         config,
         resuming_session,
-        dns_name,
+        server_id,
         randoms,
         suite,
         transcript,
@@ -401,7 +418,7 @@ fn validate_encrypted_extensions(
 struct ExpectEncryptedExtensions {
     config: Arc<ClientConfig>,
     resuming_session: Option<persist::ClientSessionValueWithResolvedCipherSuite>,
-    dns_name: webpki::DnsName,
+    server_id: ServerIdentity,
     randoms: ConnectionRandoms,
     suite: &'static SupportedCipherSuite,
     transcript: HandshakeHash,
@@ -417,7 +434,12 @@ impl hs::State for ExpectEncryptedExtensions {
             HandshakeType::EncryptedExtensions,
             HandshakePayload::EncryptedExtensions
         )?;
-        debug!("TLS1.3 encrypted extensions: {:?}", exts);
+
+        // TODO: throw an error here.
+        //if let ServerExtension::EncryptedClientHello(ec) = exts.iter().find(|se| {
+        //    se.get_type() == ExtensionType::EncryptedClientHello
+        //}
+
         self.transcript.add_message(&m);
 
         validate_encrypted_extensions(cx.common, &self.hello, &exts)?;
@@ -473,7 +495,10 @@ impl hs::State for ExpectEncryptedExtensions {
             let sig_verified = verify::HandshakeSignatureValid::assertion();
             Ok(Box::new(ExpectFinished {
                 config: self.config,
-                dns_name: self.dns_name,
+                dns_name: self
+                    .server_id
+                    .get_inner_hostname()
+                    .to_owned(),
                 randoms: self.randoms,
                 suite: self.suite,
                 transcript: self.transcript,
@@ -490,7 +515,10 @@ impl hs::State for ExpectEncryptedExtensions {
             }
             Ok(Box::new(ExpectCertificateOrCertReq {
                 config: self.config,
-                dns_name: self.dns_name,
+                dns_name: self
+                    .server_id
+                    .get_inner_hostname()
+                    .to_owned(),
                 randoms: self.randoms,
                 suite: self.suite,
                 transcript: self.transcript,

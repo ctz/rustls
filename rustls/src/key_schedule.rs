@@ -12,11 +12,12 @@ use ring::{
 
 /// The kinds of secret we can extract from `KeySchedule`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum SecretKind {
+pub enum SecretKind {
     ResumptionPskBinderKey,
     ClientEarlyTrafficSecret,
     ClientHandshakeTrafficSecret,
     ServerHandshakeTrafficSecret,
+    ServerEchConfirmationSecret,
     ClientApplicationTrafficSecret,
     ServerApplicationTrafficSecret,
     ExporterMasterSecret,
@@ -31,6 +32,7 @@ impl SecretKind {
             SecretKind::ClientEarlyTrafficSecret => b"c e traffic",
             SecretKind::ClientHandshakeTrafficSecret => b"c hs traffic",
             SecretKind::ServerHandshakeTrafficSecret => b"s hs traffic",
+            SecretKind::ServerEchConfirmationSecret => b"ech accept confirmation",
             SecretKind::ClientApplicationTrafficSecret => b"c ap traffic",
             SecretKind::ServerApplicationTrafficSecret => b"s ap traffic",
             SecretKind::ExporterMasterSecret => b"exp master",
@@ -45,6 +47,7 @@ impl SecretKind {
             ClientEarlyTrafficSecret => "CLIENT_EARLY_TRAFFIC_SECRET",
             ClientHandshakeTrafficSecret => "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
             ServerHandshakeTrafficSecret => "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+            ServerEchConfirmationSecret => "SERVER_ECH_CONFIRMATION_SECRET",
             ClientApplicationTrafficSecret => "CLIENT_TRAFFIC_SECRET_0",
             ServerApplicationTrafficSecret => "SERVER_TRAFFIC_SECRET_0",
             ExporterMasterSecret => "EXPORTER_SECRET",
@@ -58,7 +61,7 @@ impl SecretKind {
 /// This is the TLS1.3 key schedule.  It stores the current secret and
 /// the type of hash.  This isn't used directly; but only through the
 /// typestates.
-struct KeySchedule {
+pub(crate) struct KeySchedule {
     current: hkdf::Prk,
     algorithm: ring::hkdf::Algorithm,
 }
@@ -175,6 +178,14 @@ impl KeyScheduleHandshake {
         );
         self.current_server_traffic_secret = Some(secret.clone());
         secret
+    }
+
+    pub fn server_ech_confirmation_secret(&mut self, hs_hash: &Digest) -> PayloadU8 {
+        self.ks.derive::<PayloadU8, _>(
+            PayloadU8Len(self.ks.algorithm.len()),
+            SecretKind::ServerEchConfirmationSecret,
+            hs_hash.as_ref(),
+        )
     }
 
     pub fn sign_server_finish(&self, hs_hash: &Digest) -> hmac::Tag {
@@ -331,7 +342,7 @@ impl KeyScheduleTraffic {
 }
 
 impl KeySchedule {
-    fn new(algorithm: hkdf::Algorithm, secret: &[u8]) -> KeySchedule {
+    pub(crate) fn new(algorithm: hkdf::Algorithm, secret: &[u8]) -> KeySchedule {
         let zeroes = [0u8; digest::MAX_OUTPUT_LEN];
         let zeroes = &zeroes[..algorithm.len()];
         let salt = hkdf::Salt::new(algorithm, &zeroes);
@@ -364,7 +375,7 @@ impl KeySchedule {
     }
 
     /// Derive a secret of given `kind`, using current handshake hash `hs_hash`.
-    fn derive<T, L>(&self, key_type: L, kind: SecretKind, hs_hash: &[u8]) -> T
+    pub(crate) fn derive<T, L>(&self, key_type: L, kind: SecretKind, hs_hash: &[u8]) -> T
     where
         T: for<'a> From<hkdf::Okm<'a, L>>,
         L: hkdf::KeyType,

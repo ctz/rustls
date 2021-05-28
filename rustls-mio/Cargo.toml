@@ -18,6 +18,7 @@ log = { version = "0.4.4", optional = true }
 rustls = { path = "../rustls" }
 rustls-pemfile = "0.2.0"
 sct = "0.7"
+trust-dns-resolver = { version="0.20.3", features = ["dns-over-rustls", "dns-over-https-rustls"] }
 webpki = "0.22"
 
 [dev-dependencies]
@@ -38,3 +39,7 @@ path = "examples/tlsclient.rs"
 [[example]]
 name = "tlsserver"
 path = "examples/tlsserver.rs"
+
+[[example]]
+name = "tls_ech_client"
+path = "examples/tls_ech_client.rs"

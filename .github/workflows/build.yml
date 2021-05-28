@@ -174,26 +174,6 @@ jobs:
           file: final.info
           fail_ci_if_error: false
 
-
-  minver:
-    name: Check minimum versions
-    runs-on: ubuntu-18.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
-        with:
-          persist-credentials: false
-
-      - name: Install rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
-          default: true
-
-      - name: cargo test (debug; all features; -Z minimal-versions)
-        run: cargo -Z minimal-versions test --all-features
-
   format:
     name: Format
     runs-on: ubuntu-latest

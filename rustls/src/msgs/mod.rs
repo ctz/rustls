@@ -8,6 +8,7 @@ pub mod base;
 pub mod ccs;
 pub mod codec;
 pub mod deframer;
+pub mod ech;
 #[allow(non_camel_case_types)]
 pub mod enums;
 pub mod fragmenter;

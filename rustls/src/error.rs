@@ -106,6 +106,9 @@ pub enum Error {
     /// An incoming connection did not support any known application protocol.
     NoApplicationProtocol,
 
+    /// Couldn't find a suitable HPKE cipher suite for ECH
+    NoHpkeConfig,
+
     /// The `max_fragment_size` value supplied in configuration was too small,
     /// or too large.
     BadMaxFragmentSize,
@@ -155,6 +158,7 @@ impl fmt::Display for Error {
             Error::PeerSentOversizedRecord => write!(f, "peer sent excess record size"),
             Error::HandshakeNotComplete => write!(f, "handshake not complete"),
             Error::NoApplicationProtocol => write!(f, "peer doesn't support any known protocol"),
+            Error::NoHpkeConfig => write!(f, "peer doesn't support any known HPKE config"),
             Error::InvalidSct(ref err) => write!(f, "invalid certificate timestamp: {:?}", err),
             Error::FailedToGetCurrentTime => write!(f, "failed to get current time"),
             Error::FailedToGetRandomBytes => write!(f, "failed to get random bytes"),
@@ -218,6 +222,7 @@ mod tests {
             Error::HandshakeNotComplete,
             Error::PeerSentOversizedRecord,
             Error::NoApplicationProtocol,
+            Error::NoHpkeConfig,
             Error::BadMaxFragmentSize,
         ];
 

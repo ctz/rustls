@@ -1217,3 +1217,99 @@ fn cannot_decode_huge_certificate() {
     buf[6] = 0x01;
     assert!(HandshakeMessagePayload::read_bytes(&buf).is_none());
 }
+
+#[test]
+fn hpke_config_roundtrip() {
+    let hkc = HpkeKeyConfig {
+        config_id: 0,
+        hpke_kem_id: KEM::DHKEM_P256_HKDF_SHA256,
+        hpke_public_key: PayloadU16(b"12341234".to_vec()),
+        hpke_symmetric_cipher_suites: vec![HpkeSymmetricCipherSuite::default()],
+    };
+    let mut bytes = Vec::new();
+    hkc.encode(&mut bytes);
+    let mut rd = Reader::init(&bytes);
+    let hkc_2 = HpkeKeyConfig::read(&mut rd)
+        .unwrap()
+        .clone();
+    assert_eq!(hkc.config_id, hkc_2.config_id);
+    assert_eq!(hkc.hpke_kem_id, hkc_2.hpke_kem_id);
+    assert_eq!(hkc.hpke_public_key, hkc_2.hpke_public_key);
+    assert_eq!(
+        hkc.hpke_symmetric_cipher_suites,
+        hkc_2.hpke_symmetric_cipher_suites
+    );
+}
+
+#[test]
+fn client_outer_aad_roundtrip() {
+    let aad = ClientHelloOuterAAD {
+        cipher_suite: HpkeSymmetricCipherSuite::default(),
+        config_id: 0,
+        enc: PayloadU16(b"12341234".to_vec()),
+        outer_hello: PayloadU24(b"123412341".to_vec()),
+    };
+    let mut bytes = Vec::new();
+    aad.encode(&mut bytes);
+    let mut rd = Reader::init(&bytes);
+    let aad_2 = ClientHelloOuterAAD::read(&mut rd)
+        .unwrap()
+        .clone();
+    assert_eq!(aad.cipher_suite, aad_2.cipher_suite);
+    assert_eq!(aad.config_id, aad_2.config_id);
+    assert_eq!(aad.enc, aad_2.enc);
+    assert_eq!(aad.outer_hello, aad_2.outer_hello);
+}
+
+#[test]
+fn client_ech_roundtrip() {
+    let client_ech = ClientEch {
+        cipher_suite: HpkeSymmetricCipherSuite::default(),
+        config_id: 0,
+        enc: PayloadU16(b"enc".to_vec()),
+        payload: PayloadU16(b"payload".to_vec()),
+    };
+    let mut bytes = Vec::new();
+    client_ech.encode(&mut bytes);
+    let mut rd = Reader::init(&bytes);
+    let client_ech2 = ClientEch::read(&mut rd)
+        .unwrap()
+        .clone();
+    assert_eq!(client_ech.cipher_suite, client_ech2.cipher_suite);
+    assert_eq!(client_ech.config_id, client_ech2.config_id);
+    assert_eq!(client_ech.enc, client_ech2.enc);
+    assert_eq!(client_ech.payload, client_ech2.payload);
+}
+
+#[test]
+fn server_ech_roundtrip() {
+    const BASE64_ECHCONFIGS: &str = "AEj+CgBEuwAgACCYKvleXJQ16RUURAsG1qTRN70ob5ewCDH6NuzE97K8MAAEAAEAAQAAABNjbG91ZGZsYXJlLWVzbmkuY29tAAA=";
+    let bytes = base64::decode(&BASE64_ECHCONFIGS).unwrap();
+    let configs = EchConfigList::read(&mut Reader::init(&bytes)).unwrap();
+    let server_ech = ServerEch {
+        retry_configs: configs,
+    };
+    let mut bytes = Vec::new();
+    server_ech.encode(&mut bytes);
+    let mut rd = Reader::init(&bytes);
+    let server_ech2 = ServerEch::read(&mut rd)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        server_ech.retry_configs.len(),
+        server_ech2.retry_configs.len()
+    );
+}
+
+#[test]
+fn bogus_ech_value_reads() {
+    let bogus = b"asdklfjas;dklfjasd;lkfjas;lkfjas".to_vec();
+    let mut rd = Reader::init(&bogus);
+    assert!(HpkeKeyConfig::read(&mut rd).is_none());
+    let mut rd = Reader::init(&bogus);
+    assert!(EchConfigContents::read(&mut rd).is_none());
+    let mut rd = Reader::init(&bogus);
+    assert!(ClientEch::read(&mut rd).is_none());
+    let mut rd = Reader::init(&bogus);
+    assert!(ClientHelloOuterAAD::read(&mut rd).is_none());
+}

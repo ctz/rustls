@@ -275,6 +275,7 @@ mod check;
 mod bs_debug;
 mod builder;
 mod client;
+mod ech_key;
 mod key;
 mod keylog;
 mod kx;
@@ -300,7 +301,7 @@ pub use crate::builder::{
 pub use crate::client::handy::{ClientSessionMemoryCache, NoClientSessionStorage};
 pub use crate::client::ResolvesClientCert;
 pub use crate::client::StoresClientSessions;
-pub use crate::client::{ClientConfig, ClientConnection, WriteEarlyData};
+pub use crate::client::{ClientConfig, ClientConnection, ServerIdentity, WriteEarlyData};
 pub use crate::conn::{Connection, Reader, Writer};
 pub use crate::error::Error;
 pub use crate::error::WebPkiOp;
