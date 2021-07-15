@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::io;
 use std::mem;
+use std::ops::{Deref, DerefMut};
 
 /// Values of this structure are returned from [`Connection::process_new_packets`]
 /// and tell the caller the current I/O state of the TLS connection.
@@ -38,8 +39,8 @@ pub struct IoState {
 }
 
 impl IoState {
-    /// How many bytes could be written by [`Connection::write_tls`] if called
-    /// right now.  A non-zero value implies [`Connection::wants_write`].
+    /// How many bytes could be written by [`CommonState::write_tls`] if called
+    /// right now.  A non-zero value implies [`CommonState::wants_write`].
     pub fn tls_bytes_to_write(&self) -> usize {
         self.tls_bytes_to_write
     }
@@ -146,12 +147,12 @@ impl<'a> Writer<'a> {
 impl<'a> io::Write for Writer<'a> {
     /// Send the plaintext `buf` to the peer, encrypting
     /// and authenticating it.  Once this function succeeds
-    /// you should call [`Connection::write_tls`] which will output the
+    /// you should call [`CommonState::write_tls`] which will output the
     /// corresponding TLS records.
     ///
     /// This function buffers plaintext sent before the
     /// TLS handshake completes, and sends it as soon
-    /// as it can.  See [`Connection::set_buffer_limit`] to control
+    /// as it can.  See [`CommonState::set_buffer_limit`] to control
     /// the size of this buffer.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.sink.write(buf)
@@ -167,7 +168,7 @@ impl<'a> io::Write for Writer<'a> {
 }
 
 /// Generalises `ClientConnection` and `ServerConnection`
-pub trait Connection: quic::QuicExt + Send + Sync {
+pub trait Connection: DerefMut + Deref<Target = CommonState> + quic::QuicExt + Send + Sync {
     /// Read TLS content from `rd`.  This method does internal
     /// buffering, so `rd` can supply TLS messages in arbitrary-
     /// sized chunks (like a socket or pipe might).
@@ -184,17 +185,6 @@ pub trait Connection: quic::QuicExt + Send + Sync {
     ///
     /// [`process_new_packets`]: Connection::process_new_packets
     fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error>;
-
-    /// Writes TLS messages to `wr`.
-    ///
-    /// On success the function returns `Ok(n)` where `n` is a number
-    /// of bytes written to `wr`, number of bytes after encoding and
-    /// encryption.
-    ///
-    /// Note that after function return the connection buffer maybe not
-    /// yet fully flushed. [`Connection::wants_write`] function can be used
-    /// to check if output buffer is not empty.
-    fn write_tls(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error>;
 
     /// Returns an object that allows reading plaintext.
     fn reader(&mut self) -> Reader;
@@ -222,100 +212,6 @@ pub trait Connection: quic::QuicExt + Send + Sync {
     /// [`process_new_packets`]: Connection::process_new_packets
     fn process_new_packets(&mut self) -> Result<IoState, Error>;
 
-    /// Returns true if the caller should call [`Connection::read_tls`] as soon
-    /// as possible.
-    ///
-    /// If there is pending plaintext data to read with [`Connection::reader`],
-    /// this returns false.  If your application respects this mechanism,
-    /// only one full TLS message will be buffered by rustls.
-    fn wants_read(&self) -> bool;
-
-    /// Returns true if the caller should call [`Connection::write_tls`] as soon
-    /// as possible.
-    fn wants_write(&self) -> bool;
-
-    /// Returns true if the connection is currently performing the TLS handshake.
-    ///
-    /// During this time plaintext written to the connection is buffered in memory. After
-    /// [`Connection::process_new_packets`] has been called, this might start to return `false`
-    /// while the final handshake packets still need to be extracted from the connection's buffers.
-    fn is_handshaking(&self) -> bool;
-
-    /// Sets a limit on the internal buffers used to buffer
-    /// unsent plaintext (prior to completing the TLS handshake)
-    /// and unsent TLS records.  This limit acts only on application
-    /// data written through [`Connection::writer`].
-    ///
-    /// By default the limit is 64KB.  The limit can be set
-    /// at any time, even if the current buffer use is higher.
-    ///
-    /// [`None`] means no limit applies, and will mean that written
-    /// data is buffered without bound -- it is up to the application
-    /// to appropriately schedule its plaintext and TLS writes to bound
-    /// memory usage.
-    ///
-    /// For illustration: `Some(1)` means a limit of one byte applies:
-    /// [`Connection::writer`] will accept only one byte, encrypt it and
-    /// add a TLS header.  Once this is sent via [`Connection::write_tls`],
-    /// another byte may be sent.
-    ///
-    /// # Internal write-direction buffering
-    /// rustls has two buffers whose size are bounded by this setting:
-    ///
-    /// ## Buffering of unsent plaintext data prior to handshake completion
-    ///
-    /// Calls to [`Connection::writer`] before or during the handshake
-    /// are buffered (up to the limit specified here).  Once the
-    /// handshake completes this data is encrypted and the resulting
-    /// TLS records are added to the outgoing buffer.
-    ///
-    /// ## Buffering of outgoing TLS records
-    ///
-    /// This buffer is used to store TLS records that rustls needs to
-    /// send to the peer.  It is used in these two circumstances:
-    ///
-    /// - by [`Connection::process_new_packets`] when a handshake or alert
-    ///   TLS record needs to be sent.
-    /// - by [`Connection::writer`] post-handshake: the plaintext is
-    ///   encrypted and the resulting TLS record is buffered.
-    ///
-    /// This buffer is emptied by [`Connection::write_tls`].
-    fn set_buffer_limit(&mut self, limit: Option<usize>);
-
-    /// Queues a close_notify warning alert to be sent in the next
-    /// [`Connection::write_tls`] call.  This informs the peer that the
-    /// connection is being closed.
-    fn send_close_notify(&mut self);
-
-    /// Retrieves the certificate chain used by the peer to authenticate.
-    ///
-    /// The order of the certificate chain is as it appears in the TLS
-    /// protocol: the first certificate relates to the peer, the
-    /// second certifies the first, the third certifies the second, and
-    /// so on.
-    ///
-    /// This is made available for both full and resumed handshakes.
-    ///
-    /// For clients, this is the certificate chain of the server.
-    ///
-    /// For servers, this is the certificate chain of the client,
-    /// if client authentication was completed.
-    ///
-    /// The return value is None until this value is available.
-    fn peer_certificates(&self) -> Option<&[key::Certificate]>;
-
-    /// Retrieves the protocol agreed with the peer via ALPN.
-    ///
-    /// A return value of `None` after handshake completion
-    /// means no protocol was agreed (because no protocols
-    /// were offered or accepted by the peer).
-    fn alpn_protocol(&self) -> Option<&[u8]>;
-
-    /// Retrieves the protocol version agreed with the peer.
-    ///
-    /// This returns `None` until the version is agreed.
-    fn protocol_version(&self) -> Option<ProtocolVersion>;
-
     /// Derives key material from the agreed connection secrets.
     ///
     /// This function fills in `output` with `output.len()` bytes of key
@@ -328,7 +224,7 @@ pub trait Connection: quic::QuicExt + Send + Sync {
     /// "early" exporter at any point.
     ///
     /// This function fails if called prior to the handshake completing;
-    /// check with [`Connection::is_handshaking`] first.
+    /// check with [`CommonState::is_handshaking`] first.
     fn export_keying_material(
         &self,
         output: &mut [u8],
@@ -364,10 +260,10 @@ pub trait Connection: quic::QuicExt + Send + Sync {
     /// Errors from TLS record handling (i.e., from [`process_new_packets`])
     /// are wrapped in an `io::ErrorKind::InvalidData`-kind error.
     ///
-    /// [`is_handshaking`]: Connection::is_handshaking
-    /// [`wants_read`]: Connection::wants_read
-    /// [`wants_write`]: Connection::wants_write
-    /// [`write_tls`]: Connection::write_tls
+    /// [`is_handshaking`]: CommonState::is_handshaking
+    /// [`wants_read`]: CommonState::wants_read
+    /// [`wants_write`]: CommonState::wants_write
+    /// [`write_tls`]: CommonState::write_tls
     /// [`read_tls`]: Connection::read_tls
     /// [`process_new_packets`]: Connection::process_new_packets
     fn complete_io<T>(&mut self, io: &mut T) -> Result<(usize, usize), io::Error>
@@ -807,7 +703,8 @@ impl<Data> ConnectionCommon<Data> {
     }
 }
 
-pub(crate) struct CommonState {
+/// Connection state common to both client and server connections.
+pub struct CommonState {
     pub(crate) negotiated_version: Option<ProtocolVersion>,
     pub(crate) is_client: bool,
     pub(crate) record_layer: record_layer::RecordLayer,
@@ -856,6 +753,56 @@ impl CommonState {
             #[cfg(feature = "quic")]
             quic: Quic::new(),
         })
+    }
+
+    /// Returns true if the caller should call [`CommonState::write_tls`] as soon
+    /// as possible.
+    pub fn wants_write(&self) -> bool {
+        !self.sendable_tls.is_empty()
+    }
+
+    /// Returns true if the connection is currently performing the TLS handshake.
+    ///
+    /// During this time plaintext written to the connection is buffered in memory. After
+    /// [`Connection::process_new_packets`] has been called, this might start to return `false`
+    /// while the final handshake packets still need to be extracted from the connection's buffers.
+    pub fn is_handshaking(&self) -> bool {
+        !self.traffic
+    }
+
+    /// Retrieves the certificate chain used by the peer to authenticate.
+    ///
+    /// The order of the certificate chain is as it appears in the TLS
+    /// protocol: the first certificate relates to the peer, the
+    /// second certifies the first, the third certifies the second, and
+    /// so on.
+    ///
+    /// This is made available for both full and resumed handshakes.
+    ///
+    /// For clients, this is the certificate chain of the server.
+    ///
+    /// For servers, this is the certificate chain of the client,
+    /// if client authentication was completed.
+    ///
+    /// The return value is None until this value is available.
+    pub fn peer_certificates(&self) -> Option<&[key::Certificate]> {
+        self.peer_certificates.as_deref()
+    }
+
+    /// Retrieves the protocol agreed with the peer via ALPN.
+    ///
+    /// A return value of `None` after handshake completion
+    /// means no protocol was agreed (because no protocols
+    /// were offered or accepted by the peer).
+    pub fn alpn_protocol(&self) -> Option<&[u8]> {
+        self.get_alpn_protocol()
+    }
+
+    /// Retrieves the protocol version agreed with the peer.
+    ///
+    /// This returns `None` until the version is agreed.
+    pub fn protocol_version(&self) -> Option<ProtocolVersion> {
+        self.negotiated_version
     }
 
     pub(crate) fn is_tls13(&self) -> bool {
@@ -1019,7 +966,14 @@ impl CommonState {
         self.queue_tls_message(em);
     }
 
-    pub(crate) fn write_tls(&mut self, wr: &mut dyn io::Write) -> io::Result<usize> {
+    /// Writes TLS messages to `wr`.
+    ///
+    /// On success, this function returns `Ok(n)` where `n` is a number of bytes written to `wr`
+    /// (after encoding and encryption).
+    ///
+    /// After this function returns, the connection buffer may not yet be fully flushed. The
+    /// [`CommonState::wants_write`] function can be used to check if the output buffer is empty.
+    pub fn write_tls(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error> {
         self.sendable_tls.write_to(wr)
     }
 
@@ -1058,7 +1012,46 @@ impl CommonState {
         self.flush_plaintext();
     }
 
-    pub(crate) fn set_buffer_limit(&mut self, limit: Option<usize>) {
+    /// Sets a limit on the internal buffers used to buffer
+    /// unsent plaintext (prior to completing the TLS handshake)
+    /// and unsent TLS records.  This limit acts only on application
+    /// data written through [`Connection::writer`].
+    ///
+    /// By default the limit is 64KB.  The limit can be set
+    /// at any time, even if the current buffer use is higher.
+    ///
+    /// [`None`] means no limit applies, and will mean that written
+    /// data is buffered without bound -- it is up to the application
+    /// to appropriately schedule its plaintext and TLS writes to bound
+    /// memory usage.
+    ///
+    /// For illustration: `Some(1)` means a limit of one byte applies:
+    /// [`Connection::writer`] will accept only one byte, encrypt it and
+    /// add a TLS header.  Once this is sent via [`CommonState::write_tls`],
+    /// another byte may be sent.
+    ///
+    /// # Internal write-direction buffering
+    /// rustls has two buffers whose size are bounded by this setting:
+    ///
+    /// ## Buffering of unsent plaintext data prior to handshake completion
+    ///
+    /// Calls to [`Connection::writer`] before or during the handshake
+    /// are buffered (up to the limit specified here).  Once the
+    /// handshake completes this data is encrypted and the resulting
+    /// TLS records are added to the outgoing buffer.
+    ///
+    /// ## Buffering of outgoing TLS records
+    ///
+    /// This buffer is used to store TLS records that rustls needs to
+    /// send to the peer.  It is used in these two circumstances:
+    ///
+    /// - by [`Connection::process_new_packets`] when a handshake or alert
+    ///   TLS record needs to be sent.
+    /// - by [`Connection::writer`] post-handshake: the plaintext is
+    ///   encrypted and the resulting TLS record is buffered.
+    ///
+    /// This buffer is emptied by [`CommonState::write_tls`].
+    pub fn set_buffer_limit(&mut self, limit: Option<usize>) {
         self.sendable_plaintext.set_limit(limit);
         self.sendable_tls.set_limit(limit);
     }
@@ -1172,7 +1165,10 @@ impl CommonState {
         self.sent_fatal_alert = true;
     }
 
-    pub(crate) fn send_close_notify(&mut self) {
+    /// Queues a close_notify warning alert to be sent in the next
+    /// [`CommonState::write_tls`] call.  This informs the peer that the
+    /// connection is being closed.
+    pub fn send_close_notify(&mut self) {
         debug!("Sending warning alert {:?}", AlertDescription::CloseNotify);
         self.send_warning_alert_no_log(AlertDescription::CloseNotify);
     }
@@ -1188,7 +1184,13 @@ impl CommonState {
             .map(AsRef::as_ref)
     }
 
-    pub(crate) fn wants_read(&self) -> bool {
+    /// Returns true if the caller should call [`Connection::read_tls`] as soon
+    /// as possible.
+    ///
+    /// If there is pending plaintext data to read with [`Connection::reader`],
+    /// this returns false.  If your application respects this mechanism,
+    /// only one full TLS message will be buffered by rustls.
+    pub fn wants_read(&self) -> bool {
         // We want to read more data all the time, except when we have unprocessed plaintext.
         // This provides back-pressure to the TCP buffers. We also don't want to read more after
         // the peer has sent us a close notification.

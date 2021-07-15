@@ -1,7 +1,6 @@
 use crate::builder::{ConfigBuilder, WantsCipherSuites};
 use crate::conn::{CommonState, Connection, ConnectionCommon, IoState, Reader, Writer};
 use crate::error::Error;
-use crate::key;
 use crate::keylog::KeyLog;
 use crate::kx::SupportedKxGroup;
 #[cfg(feature = "quic")]
@@ -16,6 +15,7 @@ use crate::verify;
 use crate::{conn::Protocol, quic};
 
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::{fmt, io};
 
@@ -334,60 +334,8 @@ impl Connection for ServerConnection {
         self.inner.read_tls(rd)
     }
 
-    /// Writes TLS messages to `wr`.
-    fn write_tls(&mut self, wr: &mut dyn io::Write) -> io::Result<usize> {
-        self.inner.common_state.write_tls(wr)
-    }
-
     fn process_new_packets(&mut self) -> Result<IoState, Error> {
         self.inner.process_new_packets()
-    }
-
-    fn wants_read(&self) -> bool {
-        self.inner.common_state.wants_read()
-    }
-
-    fn wants_write(&self) -> bool {
-        !self
-            .inner
-            .common_state
-            .sendable_tls
-            .is_empty()
-    }
-
-    fn is_handshaking(&self) -> bool {
-        !self.inner.common_state.traffic
-    }
-
-    fn set_buffer_limit(&mut self, len: Option<usize>) {
-        self.inner
-            .common_state
-            .set_buffer_limit(len)
-    }
-
-    fn send_close_notify(&mut self) {
-        self.inner
-            .common_state
-            .send_close_notify()
-    }
-
-    fn peer_certificates(&self) -> Option<&[key::Certificate]> {
-        self.inner
-            .common_state
-            .peer_certificates
-            .as_deref()
-    }
-
-    fn alpn_protocol(&self) -> Option<&[u8]> {
-        self.inner
-            .common_state
-            .get_alpn_protocol()
-    }
-
-    fn protocol_version(&self) -> Option<ProtocolVersion> {
-        self.inner
-            .common_state
-            .negotiated_version
     }
 
     fn export_keying_material(
@@ -417,6 +365,20 @@ impl fmt::Debug for ServerConnection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ServerConnection")
             .finish()
+    }
+}
+
+impl Deref for ServerConnection {
+    type Target = CommonState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner.common_state
+    }
+}
+
+impl DerefMut for ServerConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner.common_state
     }
 }
 
