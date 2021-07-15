@@ -16,7 +16,7 @@ jobs:
           - stable
           - beta
           - nightly
-          - 1.52.1 # MSRV as recommend by https://blog.rust-lang.org/2021/05/10/Rust-1.52.1.html
+          - 1.50.0
         os: [ubuntu-18.04]
         # but only stable on macos/windows (slower platforms)
         include:
