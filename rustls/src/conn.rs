@@ -887,10 +887,6 @@ impl CommonState {
         Error::PeerMisbehavedError(why.to_string())
     }
 
-    pub(crate) fn get_suite(&self) -> Option<SupportedCipherSuite> {
-        self.suite
-    }
-
     pub(crate) fn decrypt_incoming(&mut self, encr: OpaqueMessage) -> Result<PlainMessage, Error> {
         if self
             .record_layer

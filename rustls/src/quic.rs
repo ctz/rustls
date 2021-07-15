@@ -165,7 +165,7 @@ pub(crate) fn write_hs(this: &mut CommonState, buf: &mut Vec<u8>) -> Option<Keys
     }
 
     let suite = this
-        .get_suite()
+        .suite
         .and_then(|suite| suite.tls13())?;
     if let Some(secrets) = this.quic.hs_secrets.take() {
         return Some(Keys::new(suite, this.is_client, &secrets));
@@ -183,7 +183,7 @@ pub(crate) fn write_hs(this: &mut CommonState, buf: &mut Vec<u8>) -> Option<Keys
 
 pub(crate) fn next_1rtt_keys(this: &mut CommonState) -> Option<PacketKeySet> {
     let suite = this
-        .get_suite()
+        .suite
         .and_then(|suite| suite.tls13())?;
     let secrets = this.quic.traffic_secrets.as_ref()?;
     let next = next_1rtt_secrets(suite.hkdf_algorithm, secrets);

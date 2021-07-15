@@ -349,7 +349,7 @@ impl Connection for ServerConnection {
     }
 
     fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
-        self.inner.common_state.get_suite()
+        self.inner.common_state.suite
     }
 
     fn writer(&mut self) -> Writer {
@@ -419,7 +419,7 @@ impl quic::QuicExt for ServerConnection {
         Some(quic::DirectionalKeys::new(
             self.inner
                 .common_state
-                .get_suite()
+                .suite
                 .and_then(|suite| suite.tls13())?,
             self.inner
                 .common_state

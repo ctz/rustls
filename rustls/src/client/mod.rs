@@ -512,7 +512,7 @@ impl Connection for ClientConnection {
     fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
         self.inner
             .common_state
-            .get_suite()
+            .suite
             .or(self.inner.data.resumption_ciphersuite)
     }
 
