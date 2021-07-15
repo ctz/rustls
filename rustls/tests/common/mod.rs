@@ -1,5 +1,6 @@
 use std::convert::{TryFrom, TryInto};
 use std::io;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use rustls_pemfile;
@@ -11,7 +12,7 @@ use rustls::Error;
 use rustls::{AllowAnyAuthenticatedClient, RootCertStore};
 use rustls::{Certificate, PrivateKey};
 use rustls::{ClientConfig, ClientConnection};
-use rustls::{ServerConfig, ServerConnection};
+use rustls::{ConnectionCommon, ServerConfig, ServerConnection, SideData};
 
 #[cfg(feature = "dangerous_configuration")]
 use rustls::{
@@ -99,7 +100,10 @@ embed_files! {
     (RSA_INTER_REQ, "rsa", "inter.req");
 }
 
-pub fn transfer(left: &mut dyn Connection, right: &mut dyn Connection) -> usize {
+pub fn transfer(
+    left: &mut (impl DerefMut + Deref<Target = ConnectionCommon<impl SideData>>),
+    right: &mut (impl DerefMut + Deref<Target = ConnectionCommon<impl SideData>>),
+) -> usize {
     let mut buf = [0u8; 262144];
     let mut total = 0;
 
@@ -126,11 +130,7 @@ pub fn transfer(left: &mut dyn Connection, right: &mut dyn Connection) -> usize 
     total
 }
 
-pub fn transfer_altered<F>(
-    left: &mut dyn Connection,
-    filter: F,
-    right: &mut dyn Connection,
-) -> usize
+pub fn transfer_altered<F>(left: &mut Connection, filter: F, right: &mut Connection) -> usize
 where
     F: Fn(&mut Message),
 {
@@ -374,8 +374,8 @@ pub fn make_pair_for_arc_configs(
 }
 
 pub fn do_handshake(
-    client: &mut ClientConnection,
-    server: &mut ServerConnection,
+    client: &mut (impl DerefMut + Deref<Target = ConnectionCommon<impl SideData>>),
+    server: &mut (impl DerefMut + Deref<Target = ConnectionCommon<impl SideData>>),
 ) -> (usize, usize) {
     let (mut to_client, mut to_server) = (0, 0);
     while server.is_handshaking() || client.is_handshaking() {

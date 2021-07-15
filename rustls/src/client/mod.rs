@@ -1,5 +1,5 @@
 use crate::builder::{ConfigBuilder, WantsCipherSuites};
-use crate::conn::{CommonState, Connection, ConnectionCommon, IoState, Protocol, Reader, Writer};
+use crate::conn::{CommonState, ConnectionCommon, Protocol};
 use crate::error::Error;
 use crate::keylog::KeyLog;
 use crate::kx::SupportedKxGroup;
@@ -490,49 +490,41 @@ impl ClientConnection {
     }
 }
 
-impl Connection for ClientConnection {
-    fn read_tls(&mut self, rd: &mut dyn io::Read) -> io::Result<usize> {
-        self.inner.read_tls(rd)
-    }
-
-    fn process_new_packets(&mut self) -> Result<IoState, Error> {
-        self.inner.process_new_packets()
-    }
-
-    fn export_keying_material(
-        &self,
-        output: &mut [u8],
-        label: &[u8],
-        context: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        self.inner
-            .export_keying_material(output, label, context)
-    }
-
-    fn writer(&mut self) -> Writer {
-        Writer::new(&mut self.inner)
-    }
-
-    fn reader(&mut self) -> Reader {
-        self.inner.reader()
-    }
-}
-
 impl Deref for ClientConnection {
-    type Target = CommonState;
+    type Target = ConnectionCommon<ClientConnectionData>;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner.common_state
+        &self.inner
     }
 }
 
 impl DerefMut for ClientConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner.common_state
+        &mut self.inner
     }
 }
 
-struct ClientConnectionData {
+#[doc(hidden)]
+impl<'a> TryFrom<&'a mut crate::Connection> for &'a mut ClientConnection {
+    type Error = ();
+
+    fn try_from(value: &'a mut crate::Connection) -> Result<Self, Self::Error> {
+        use crate::Connection::*;
+        match value {
+            Client(conn) => Ok(conn),
+            Server(_) => Err(()),
+        }
+    }
+}
+
+impl From<ClientConnection> for crate::Connection {
+    fn from(conn: ClientConnection) -> Self {
+        Self::Client(conn)
+    }
+}
+
+/// State associated with a client connection.
+pub struct ClientConnectionData {
     early_data: EarlyData,
     resumption_ciphersuite: Option<SupportedCipherSuite>,
 }
@@ -545,6 +537,8 @@ impl ClientConnectionData {
         }
     }
 }
+
+impl crate::conn::SideData for ClientConnectionData {}
 
 #[cfg(feature = "quic")]
 impl quic::QuicExt for ClientConnection {

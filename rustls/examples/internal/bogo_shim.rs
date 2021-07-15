@@ -9,10 +9,12 @@ use env_logger;
 use rustls;
 
 use rustls::internal::msgs::enums::ProtocolVersion;
-use rustls::quic;
 use rustls::quic::ClientQuicExt;
 use rustls::quic::ServerQuicExt;
+use rustls::quic::{self, QuicExt};
+use rustls::ClientConnection;
 use rustls::ClientHello;
+use rustls::Connection;
 use std::convert::TryInto;
 use std::env;
 use std::fs;
@@ -20,7 +22,6 @@ use std::io;
 use std::io::BufReader;
 use std::io::{Read, Write};
 use std::net;
-use std::ops::{Deref, DerefMut};
 use std::process;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -540,7 +541,7 @@ fn handle_err(err: rustls::Error) -> ! {
     }
 }
 
-fn flush(sess: &mut ClientOrServer, conn: &mut net::TcpStream) {
+fn flush(sess: &mut Connection, conn: &mut net::TcpStream) {
     while sess.wants_write() {
         match sess.write_tls(conn) {
             Err(err) => {
@@ -553,47 +554,16 @@ fn flush(sess: &mut ClientOrServer, conn: &mut net::TcpStream) {
     conn.flush().unwrap();
 }
 
-enum ClientOrServer {
-    Client(rustls::ClientConnection),
-    Server(rustls::ServerConnection),
+fn client(conn: &mut Connection) -> &mut ClientConnection {
+    conn.try_into().unwrap()
 }
 
-impl Deref for ClientOrServer {
-    type Target = dyn rustls::Connection;
-
-    fn deref(&self) -> &Self::Target {
-        match &self {
-            ClientOrServer::Client(ref c) => c,
-            ClientOrServer::Server(ref s) => s,
-        }
-    }
-}
-
-impl DerefMut for ClientOrServer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            ClientOrServer::Client(ref mut c) => c,
-            ClientOrServer::Server(ref mut s) => s,
-        }
-    }
-}
-
-impl ClientOrServer {
-    fn client(&mut self) -> &mut rustls::ClientConnection {
-        match self {
-            ClientOrServer::Client(ref mut c) => c,
-            ClientOrServer::Server(_) => panic!("ClientConnection required here"),
-        }
-    }
-}
-
-fn exec(opts: &Options, mut sess: ClientOrServer, count: usize) {
+fn exec(opts: &Options, mut sess: Connection, count: usize) {
     let mut sent_message = false;
 
     if opts.queue_data || (opts.queue_data_on_resume && count > 0) {
         if count > 0 && opts.enable_early_data {
-            let len = sess
-                .client()
+            let len = client(&mut sess)
                 .early_data()
                 .expect("0rtt not available")
                 .write(b"hello")
@@ -690,9 +660,9 @@ fn exec(opts: &Options, mut sess: ClientOrServer, count: usize) {
         }
 
         if opts.enable_early_data && !sess.is_handshaking() && count > 0 {
-            if opts.expect_accept_early_data && !sess.client().is_early_data_accepted() {
+            if opts.expect_accept_early_data && !client(&mut sess).is_early_data_accepted() {
                 quit_err("Early data was not accepted, but we expect the opposite");
-            } else if opts.expect_reject_early_data && sess.client().is_early_data_accepted() {
+            } else if opts.expect_reject_early_data && client(&mut sess).is_early_data_accepted() {
                 quit_err("Early data was accepted, but we expect the opposite");
             }
             if opts.expect_version == 0x0304 {
@@ -1077,7 +1047,7 @@ fn main() {
         opts: &Options,
         scfg: &Option<Arc<rustls::ServerConfig>>,
         ccfg: &Option<Arc<rustls::ClientConfig>>,
-    ) -> ClientOrServer {
+    ) -> Connection {
         if opts.server {
             let scfg = Arc::clone(scfg.as_ref().unwrap());
             let s = if opts.quic_transport_params.is_empty() {
@@ -1090,7 +1060,7 @@ fn main() {
                 )
                 .unwrap()
             };
-            ClientOrServer::Server(s)
+            s.into()
         } else {
             let server_name = opts
                 .host_name
@@ -1109,7 +1079,7 @@ fn main() {
                 )
             }
             .unwrap();
-            ClientOrServer::Client(c)
+            c.into()
         }
     }
 

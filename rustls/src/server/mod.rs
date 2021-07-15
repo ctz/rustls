@@ -1,5 +1,5 @@
 use crate::builder::{ConfigBuilder, WantsCipherSuites};
-use crate::conn::{CommonState, Connection, ConnectionCommon, IoState, Reader, Writer};
+use crate::conn::{CommonState, ConnectionCommon};
 use crate::error::Error;
 use crate::keylog::KeyLog;
 use crate::kx::SupportedKxGroup;
@@ -14,10 +14,10 @@ use crate::verify;
 #[cfg(feature = "quic")]
 use crate::{conn::Protocol, quic};
 
+use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::{fmt, io};
 
 #[macro_use]
 mod hs;
@@ -329,34 +329,6 @@ impl ServerConnection {
     }
 }
 
-impl Connection for ServerConnection {
-    fn read_tls(&mut self, rd: &mut dyn io::Read) -> io::Result<usize> {
-        self.inner.read_tls(rd)
-    }
-
-    fn process_new_packets(&mut self) -> Result<IoState, Error> {
-        self.inner.process_new_packets()
-    }
-
-    fn export_keying_material(
-        &self,
-        output: &mut [u8],
-        label: &[u8],
-        context: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        self.inner
-            .export_keying_material(output, label, context)
-    }
-
-    fn writer(&mut self) -> Writer {
-        Writer::new(&mut self.inner)
-    }
-
-    fn reader(&mut self) -> Reader {
-        self.inner.reader()
-    }
-}
-
 impl fmt::Debug for ServerConnection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ServerConnection")
@@ -365,21 +337,28 @@ impl fmt::Debug for ServerConnection {
 }
 
 impl Deref for ServerConnection {
-    type Target = CommonState;
+    type Target = ConnectionCommon<ServerConnectionData>;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner.common_state
+        &self.inner
     }
 }
 
 impl DerefMut for ServerConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner.common_state
+        &mut self.inner
     }
 }
 
+impl From<ServerConnection> for crate::Connection {
+    fn from(conn: ServerConnection) -> Self {
+        Self::Server(conn)
+    }
+}
+
+/// State associated with a server connection.
 #[derive(Default)]
-struct ServerConnectionData {
+pub struct ServerConnectionData {
     sni: Option<webpki::DnsName>,
     received_resumption_data: Option<Vec<u8>>,
     resumption_data: Vec<u8>,
@@ -399,6 +378,8 @@ impl ServerConnectionData {
             .map(|name| verify::DnsName(name.clone()))
     }
 }
+
+impl crate::conn::SideData for ServerConnectionData {}
 
 #[cfg(feature = "quic")]
 impl quic::QuicExt for ServerConnection {

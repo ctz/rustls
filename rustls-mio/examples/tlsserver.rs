@@ -23,7 +23,7 @@ use rustls;
 use rustls_pemfile;
 
 use rustls::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, Connection, NoClientAuth,
+    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
     RootCertStore,
 };
 

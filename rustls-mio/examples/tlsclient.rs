@@ -22,7 +22,7 @@ use docopt::Docopt;
 use rustls;
 use webpki_roots;
 
-use rustls::{Connection, OwnedTrustAnchor, RootCertStore};
+use rustls::{OwnedTrustAnchor, RootCertStore};
 
 const CLIENT: mio::Token = mio::Token(0);
 
