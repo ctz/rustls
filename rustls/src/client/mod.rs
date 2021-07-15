@@ -510,10 +510,7 @@ impl Connection for ClientConnection {
     }
 
     fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
-        self.inner
-            .common_state
-            .suite
-            .or(self.inner.data.resumption_ciphersuite)
+        self.inner.common_state.suite
     }
 
     fn writer(&mut self) -> Writer {

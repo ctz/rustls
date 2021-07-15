@@ -269,6 +269,7 @@ pub(super) fn prepare_resumption(
     exts: &mut Vec<ClientExtension>,
     doing_retry: bool,
 ) {
+    cx.common.suite = Some(resuming_suite.into());
     cx.data.resumption_ciphersuite = Some(resuming_suite.into());
     // The EarlyData extension MUST be supplied together with the
     // PreSharedKey extension.
