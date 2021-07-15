@@ -58,6 +58,10 @@ If you'd like to help out, please see [CONTRIBUTING.md](CONTRIBUTING.md).
   - *Breaking API change*: `peer_certificates` returns a borrow rather than a copy on the
     internally stored certificate chain.
   - *Breaking API change*: `ClientConnection`'s DNS name parameter is now a new enum, `ServerName`, to allow future support for ECH and servers named by IP address.
+  - *Breaking API change*: `QuicExt::write_hs()` now returns a `KeyChange` type that returns handshake or 1-RTT keys. In the case of 1-RTT keys, a `KeyChange` also
+    includes a `Secrets` type that must be used to derive further key updates, independent from the rustls `Connection`. The `QuicExt::next_1rtt_keys()` method
+    has been removed.
+  - *Breaking API change*: QUIC header protection keys now use a new type that directly exposes a masking/unmasking operation.
 * 0.19.1 (2021-04-17):
   - Backport: fix security issue: there was a reachable panic in servers if a client
     sent an invalid `ClientECDiffieHellmanPublic` encoding, due to an errant `unwrap()`

@@ -636,16 +636,12 @@ impl quic::QuicExt for ClientConnection {
             .process_new_handshake_messages(&mut self.state, &mut self.data)
     }
 
-    fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<quic::Keys> {
+    fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<quic::KeyChange> {
         quic::write_hs(&mut self.common, buf)
     }
 
     fn alert(&self) -> Option<AlertDescription> {
         self.common.quic.alert
-    }
-
-    fn next_1rtt_keys(&mut self) -> Option<quic::PacketKeySet> {
-        quic::next_1rtt_keys(&mut self.common)
     }
 }
 

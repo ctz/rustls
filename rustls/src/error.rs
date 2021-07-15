@@ -224,6 +224,10 @@ pub enum Error {
     /// We couldn't decrypt a message.  This is invariably fatal.
     DecryptError,
 
+    /// We couldn't encrypt a message because it was larger than the allowed message size.
+    /// This should never happen if the application is using valid record sizes.
+    EncryptError,
+
     /// The peer doesn't support a protocol version/feature we require.
     /// The parameter gives a hint as to what version/feature it is.
     PeerIncompatibleError(String),
@@ -310,6 +314,7 @@ impl fmt::Display for Error {
             Error::NoCertificatesPresented => write!(f, "peer sent no certificates"),
             Error::UnsupportedNameType => write!(f, "presented server name type wasn't supported"),
             Error::DecryptError => write!(f, "cannot decrypt peer's message"),
+            Error::EncryptError => write!(f, "cannot encrypt message"),
             Error::PeerSentOversizedRecord => write!(f, "peer sent excess record size"),
             Error::HandshakeNotComplete => write!(f, "handshake not complete"),
             Error::NoApplicationProtocol => write!(f, "peer doesn't support any known protocol"),

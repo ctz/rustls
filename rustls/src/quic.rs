@@ -1,6 +1,5 @@
 /// This module contains optional APIs for implementing QUIC TLS.
-pub use crate::cipher::Iv;
-use crate::cipher::IvLen;
+use crate::cipher::{Iv, IvLen};
 pub use crate::client::ClientQuicExt;
 use crate::conn::ConnectionCommon;
 use crate::error::Error;
@@ -15,16 +14,46 @@ use ring::{aead, hkdf};
 
 /// Secrets used to encrypt/decrypt traffic
 #[derive(Clone, Debug)]
-pub(crate) struct Secrets {
+pub struct Secrets {
     /// Secret used to encrypt packets transmitted by the client
-    pub(crate) client: hkdf::Prk,
+    client: hkdf::Prk,
     /// Secret used to encrypt packets transmitted by the server
-    pub(crate) server: hkdf::Prk,
+    server: hkdf::Prk,
+    /// Cipher suite used with these secrets
+    suite: &'static Tls13CipherSuite,
+    is_client: bool,
 }
 
 impl Secrets {
-    fn local_remote(&self, is_client: bool) -> (&hkdf::Prk, &hkdf::Prk) {
-        if is_client {
+    pub(crate) fn new(
+        client: hkdf::Prk,
+        server: hkdf::Prk,
+        suite: &'static Tls13CipherSuite,
+        is_client: bool,
+    ) -> Self {
+        Self {
+            client,
+            server,
+            suite,
+            is_client,
+        }
+    }
+
+    /// Derive the next set of packet keys
+    pub fn next_packet_keys(&mut self) -> PacketKeySet {
+        let keys = PacketKeySet::new(self);
+        self.update();
+        keys
+    }
+
+    fn update(&mut self) {
+        let hkdf_alg = self.suite.hkdf_algorithm;
+        self.client = hkdf_expand(&self.client, hkdf_alg, b"quic ku", &[]);
+        self.server = hkdf_expand(&self.server, hkdf_alg, b"quic ku", &[]);
+    }
+
+    fn local_remote(&self) -> (&hkdf::Prk, &hkdf::Prk) {
+        if self.is_client {
             (&self.client, &self.server)
         } else {
             (&self.server, &self.client)
@@ -54,48 +83,174 @@ pub trait QuicExt {
     /// Emit unencrypted TLS handshake data.
     ///
     /// When this returns `Some(_)`, the new keys must be used for future handshake data.
-    fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<Keys>;
+    fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange>;
 
     /// Emit the TLS description code of a fatal alert, if one has arisen.
     ///
     /// Check after `read_hs` returns `Err(_)`.
     fn alert(&self) -> Option<AlertDescription>;
-
-    /// Compute the keys to use following a 1-RTT key update
-    ///
-    /// Will return `None` until the handshake is complete.
-    fn next_1rtt_keys(&mut self) -> Option<PacketKeySet>;
 }
 
 /// Keys used to communicate in a single direction
 pub struct DirectionalKeys {
     /// Encrypts or decrypts a packet's headers
-    pub header: aead::quic::HeaderProtectionKey,
+    pub header: HeaderProtectionKey,
     /// Encrypts or decrypts the payload of a packet
     pub packet: PacketKey,
 }
 
 impl DirectionalKeys {
     pub(crate) fn new(suite: &'static Tls13CipherSuite, secret: &hkdf::Prk) -> Self {
-        let hp_alg = match suite.common.bulk {
+        Self {
+            header: HeaderProtectionKey::new(suite, secret),
+            packet: PacketKey::new(suite, secret),
+        }
+    }
+}
+
+/// A QUIC header protection key
+pub struct HeaderProtectionKey(aead::quic::HeaderProtectionKey);
+
+impl HeaderProtectionKey {
+    fn new(suite: &'static Tls13CipherSuite, secret: &hkdf::Prk) -> Self {
+        let alg = match suite.common.bulk {
             BulkAlgorithm::Aes128Gcm => &aead::quic::AES_128,
             BulkAlgorithm::Aes256Gcm => &aead::quic::AES_256,
             BulkAlgorithm::Chacha20Poly1305 => &aead::quic::CHACHA20,
         };
 
-        Self {
-            header: hkdf_expand(secret, hp_alg, b"quic hp", &[]),
-            packet: PacketKey::new(suite, secret),
+        Self(hkdf_expand(secret, alg, b"quic hp", &[]))
+    }
+
+    /// Adds QUIC Header Protection.
+    ///
+    /// `sample` must contain the sample of encrypted payload; see
+    /// [Header Protection Sample].
+    ///
+    /// `first` must reference the first byte of the header, referred to as
+    /// `packet[0]` in [Header Protection Application].
+    ///
+    /// `packet_number` must reference the Packet Number field; this is
+    /// `packet[pn_offset:pn_offset+pn_length]` in [Header Protection Application].
+    ///
+    /// Returns an error without modifying anything if `sample` is not
+    /// the correct length (see [Header Protection Sample] and [`Self::sample_len()`]),
+    /// or `packet_number` is longer than allowed (see [Packet Number Encoding and Decoding]).
+    ///
+    /// Otherwise, `first` and `packet_number` will have the header protection added.
+    ///
+    /// [Header Protection Application]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.1
+    /// [Header Protection Sample]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.2
+    /// [Packet Number Encoding and Decoding]: https://datatracker.ietf.org/doc/html/rfc9000#section-17.1
+    #[inline]
+    pub fn mask_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), Error> {
+        self.xor_in_place(sample, first, packet_number, false)
+    }
+
+    /// Removes QUIC Header Protection.
+    ///
+    /// `sample` must contain the sample of encrypted payload; see
+    /// [Header Protection Sample].
+    ///
+    /// `first` must reference the first byte of the header, referred to as
+    /// `packet[0]` in [Header Protection Application].
+    ///
+    /// `packet_number` must reference the Packet Number field; this is
+    /// `packet[pn_offset:pn_offset+pn_length]` in [Header Protection Application].
+    ///
+    /// Returns an error without modifying anything if `sample` is not
+    /// the correct length (see [Header Protection Sample] and [`Self::sample_len()`]),
+    /// or `packet_number` is longer than allowed (see
+    /// [Packet Number Encoding and Decoding]).
+    ///
+    /// Otherwise, `first` and `packet_number` will have the header protection removed.
+    ///
+    /// [Header Protection Application]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.1
+    /// [Header Protection Sample]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.2
+    /// [Packet Number Encoding and Decoding]: https://datatracker.ietf.org/doc/html/rfc9000#section-17.1
+    #[inline]
+    pub fn unmask_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), Error> {
+        self.xor_in_place(sample, first, packet_number, true)
+    }
+
+    fn xor_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+        masked: bool,
+    ) -> Result<(), Error> {
+        // This implements [Header Protection Application] almost verbatim.
+
+        let mask = self
+            .0
+            .new_mask(sample)
+            .map_err(|_| Error::General("sample of invalid length".into()))?;
+
+        // The `unwrap()` will not panic because `new_mask` returns a
+        // non-empty result.
+        let (first_mask, pn_mask) = mask.split_first().unwrap();
+
+        // It is OK for the `mask_packet_number` to be longer than `packet_number`
+        // but a valid `packet_number` will never be longer than
+        // `mask_packet_number`.
+        if packet_number.len() > pn_mask.len() {
+            return Err(Error::General("packet number too long".into()));
         }
+
+        // Infallible from this point on. Before this point, `first` and
+        // `packet_number` are unchanged.
+
+        const LONG_HEADER_FORM: u8 = 0x80;
+        let bits = match *first & LONG_HEADER_FORM == LONG_HEADER_FORM {
+            true => 0x0f,  // Long header: 4 bits masked
+            false => 0x1f, // Short header: 5 bits masked
+        };
+
+        let pn_len = 1 + match masked {
+            // When unmasking, use the packet length bits after unmasking
+            true => (*first ^ (first_mask & bits)),
+            // When masking, use the packet length bits before masking
+            false => *first,
+        } as usize;
+
+        *first ^= first_mask & bits;
+        for (dst, m) in packet_number
+            .iter_mut()
+            .zip(pn_mask)
+            .take(pn_len)
+        {
+            *dst ^= m;
+        }
+
+        Ok(())
+    }
+
+    /// Expected sample length for the key's algorithm
+    #[inline]
+    pub fn sample_len(&self) -> usize {
+        self.0.algorithm().sample_len()
     }
 }
 
 /// Keys to encrypt or decrypt the payload of a packet
 pub struct PacketKey {
     /// Encrypts or decrypts a packet's payload
-    pub key: aead::LessSafeKey,
+    key: aead::LessSafeKey,
     /// Computes unique nonces for each packet
-    pub iv: Iv,
+    iv: Iv,
+    /// The cipher suite used for this packet key
+    suite: &'static Tls13CipherSuite,
 }
 
 impl PacketKey {
@@ -108,7 +263,86 @@ impl PacketKey {
                 &[],
             )),
             iv: hkdf_expand(secret, IvLen, b"quic iv", &[]),
+            suite,
         }
+    }
+
+    /// Encrypt a QUIC packet
+    ///
+    /// Takes a `packet_number`, used to derive the nonce; the packet `header`, which is used as
+    /// the additional authenticated data; and the `payload`. The authentication tag is returned if
+    /// encryption succeeds.
+    ///
+    /// Fails iff the payload is longer than allowed by the cipher suite's AEAD algorithm.
+    pub fn encrypt_in_place(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload: &mut [u8],
+    ) -> Result<Tag, Error> {
+        let aad = aead::Aad::from(header);
+        let nonce = nonce_for(packet_number, &self.iv);
+        let tag = self
+            .key
+            .seal_in_place_separate_tag(nonce, aad, payload)
+            .map_err(|_| Error::EncryptError)?;
+        Ok(Tag(tag))
+    }
+
+    /// Decrypt a QUIC packet
+    ///
+    /// Takes the packet `header`, which is used as the additional authenticated data, and the
+    /// `payload`, which includes the authentication tag.
+    ///
+    /// If the return value is `Ok`, the decrypted payload can be found in `payload`, up to the
+    /// length found in the return value.
+    pub fn decrypt_in_place<'a>(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload: &'a mut [u8],
+    ) -> Result<&'a [u8], Error> {
+        let payload_len = payload.len();
+        let aad = aead::Aad::from(header);
+        let nonce = nonce_for(packet_number, &self.iv);
+        self.key
+            .open_in_place(nonce, aad, payload)
+            .map_err(|_| Error::DecryptError)?;
+
+        let plain_len = payload_len - self.key.algorithm().tag_len();
+        Ok(&payload[..plain_len])
+    }
+
+    /// Number of times the packet key can be used without sacrificing confidentiality
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc9001.html#name-confidentiality-limit>.
+    #[inline]
+    pub fn confidentiality_limit(&self) -> u64 {
+        self.suite.confidentiality_limit
+    }
+
+    /// Number of times the packet key can be used without sacrificing integrity
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc9001.html#name-integrity-limit>.
+    #[inline]
+    pub fn integrity_limit(&self) -> u64 {
+        self.suite.integrity_limit
+    }
+
+    /// Tag length for the underlying AEAD algorithm
+    #[inline]
+    pub fn tag_len(&self) -> usize {
+        self.key.algorithm().tag_len()
+    }
+}
+
+/// AEAD tag, must be appended to encrypted cipher text
+pub struct Tag(aead::Tag);
+
+impl AsRef<[u8]> for Tag {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
     }
 }
 
@@ -118,6 +352,16 @@ pub struct PacketKeySet {
     pub local: PacketKey,
     /// Decrypts incoming packets
     pub remote: PacketKey,
+}
+
+impl PacketKeySet {
+    fn new(secrets: &Secrets) -> Self {
+        let (local, remote) = secrets.local_remote();
+        Self {
+            local: PacketKey::new(secrets.suite, local),
+            remote: PacketKey::new(secrets.suite, remote),
+        }
+    }
 }
 
 /// Complete set of keys used to communicate with the peer
@@ -130,27 +374,26 @@ pub struct Keys {
 
 impl Keys {
     /// Construct keys for use with initial packets
-    pub fn initial(
-        initial_salt: &hkdf::Salt,
-        client_dst_connection_id: &[u8],
-        is_client: bool,
-    ) -> Self {
+    pub fn initial(version: Version, client_dst_connection_id: &[u8], is_client: bool) -> Self {
         const CLIENT_LABEL: &[u8] = b"client in";
         const SERVER_LABEL: &[u8] = b"server in";
-        let hs_secret = initial_salt.extract(client_dst_connection_id);
+        let salt = version.initial_salt();
+        let hs_secret = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(client_dst_connection_id);
 
         let secrets = Secrets {
             client: hkdf_expand(&hs_secret, hkdf::HKDF_SHA256, CLIENT_LABEL, &[]),
             server: hkdf_expand(&hs_secret, hkdf::HKDF_SHA256, SERVER_LABEL, &[]),
+            suite: TLS13_AES_128_GCM_SHA256_INTERNAL,
+            is_client,
         };
-        Self::new(TLS13_AES_128_GCM_SHA256_INTERNAL, is_client, &secrets)
+        Self::new(&secrets)
     }
 
-    fn new(suite: &'static Tls13CipherSuite, is_client: bool, secrets: &Secrets) -> Self {
-        let (local, remote) = secrets.local_remote(is_client);
+    fn new(secrets: &Secrets) -> Self {
+        let (local, remote) = secrets.local_remote();
         Self {
-            local: DirectionalKeys::new(suite, local),
-            remote: DirectionalKeys::new(suite, remote),
+            local: DirectionalKeys::new(secrets.suite, local),
+            remote: DirectionalKeys::new(secrets.suite, remote),
         }
     }
 }
@@ -171,7 +414,7 @@ pub(crate) fn read_hs(this: &mut ConnectionCommon, plaintext: &[u8]) -> Result<(
     Ok(())
 }
 
-pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option<Keys> {
+pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option<KeyChange> {
     while let Some((_, msg)) = this.quic.hs_queue.pop_front() {
         buf.extend_from_slice(&msg);
         if let Some(&(true, _)) = this.quic.hs_queue.front() {
@@ -182,56 +425,93 @@ pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option
         }
     }
 
-    let suite = this
-        .get_suite()
-        .and_then(|suite| suite.tls13())?;
     if let Some(secrets) = this.quic.hs_secrets.take() {
-        return Some(Keys::new(suite, this.is_client, &secrets));
+        return Some(KeyChange::Handshake {
+            keys: Keys::new(&secrets),
+        });
     }
 
-    if let Some(secrets) = this.quic.traffic_secrets.as_ref() {
+    if let Some(mut secrets) = this.quic.traffic_secrets.take() {
         if !this.quic.returned_traffic_keys {
             this.quic.returned_traffic_keys = true;
-            return Some(Keys::new(suite, this.is_client, secrets));
+            let keys = Keys::new(&secrets);
+            secrets.update();
+            return Some(KeyChange::OneRtt {
+                keys,
+                next: secrets,
+            });
         }
     }
 
     None
 }
 
-pub(crate) fn next_1rtt_keys(this: &mut ConnectionCommon) -> Option<PacketKeySet> {
-    let suite = this
-        .get_suite()
-        .and_then(|suite| suite.tls13())?;
-    let secrets = this.quic.traffic_secrets.as_ref()?;
-    let next = next_1rtt_secrets(suite.hkdf_algorithm, secrets);
-
-    let (local, remote) = next.local_remote(this.is_client);
-    let keys = PacketKeySet {
-        local: PacketKey::new(suite, local),
-        remote: PacketKey::new(suite, remote),
-    };
-
-    this.quic.traffic_secrets = Some(next);
-    Some(keys)
+/// Key material for use in QUIC packet spaces
+///
+/// QUIC uses 4 different sets of keys (and progressive key updates for long-running connections):
+///
+/// * Initial: these can be created from [`Keys::initial()`]
+/// * 0-RTT keys: can be retrieved from [`QuicExt::zero_rtt_keys()`]
+/// * Handshake: these are returned from [`QuicExt::write_hs()`] after `ClientHello` and
+///   `ServerHello` messages have been exchanged
+/// * 1-RTT keys: these are returned from [`QuicExt::write_hs()`] after the handshake is done
+///
+/// Once the 1-RTT keys have been exchanged, either side may initiate a key update. Progressive
+/// update keys can be obtained from the [`Secrets`] returned in [`KeyChange::OneRtt`]. Note that
+/// only packet keys are updated by key updates; header protection keys remain the same.
+#[allow(clippy::large_enum_variant)]
+pub enum KeyChange {
+    /// Keys for the handshake space
+    Handshake {
+        /// Header and packet keys for the handshake space
+        keys: Keys,
+    },
+    /// Keys for 1-RTT data
+    OneRtt {
+        /// Header and packet keys for 1-RTT data
+        keys: Keys,
+        /// Secrets to derive updated keys from
+        next: Secrets,
+    },
 }
 
-fn next_1rtt_secrets(hkdf_alg: hkdf::Algorithm, prev: &Secrets) -> Secrets {
-    Secrets {
-        client: hkdf_expand(&prev.client, hkdf_alg, b"quic ku", &[]),
-        server: hkdf_expand(&prev.server, hkdf_alg, b"quic ku", &[]),
+/// Compute the nonce to use for encrypting or decrypting `packet_number`
+fn nonce_for(packet_number: u64, iv: &Iv) -> ring::aead::Nonce {
+    let mut out = [0; aead::NONCE_LEN];
+    out[4..].copy_from_slice(&packet_number.to_be_bytes());
+    for (out, inp) in out.iter_mut().zip(iv.0.iter()) {
+        *out ^= inp;
     }
+    aead::Nonce::assume_unique_for_key(out)
 }
 
 /// QUIC protocol version
 ///
 /// Governs version-specific behavior in the TLS layer
 #[non_exhaustive]
+#[derive(Clone, Copy)]
 pub enum Version {
-    /// Draft versions prior to V1
+    /// Draft versions 29, 30, 31 and 32
     V1Draft,
     /// First stable RFC
     V1,
+}
+
+impl Version {
+    fn initial_salt(self) -> &'static [u8; 20] {
+        match self {
+            Version::V1Draft => &[
+                // https://datatracker.ietf.org/doc/html/draft-ietf-quic-tls-32#section-5.2
+                0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61,
+                0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99,
+            ],
+            Version::V1 => &[
+                // https://www.rfc-editor.org/rfc/rfc9001.html#name-initial-secrets
+                0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8,
+                0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -239,165 +519,53 @@ mod test {
     use super::*;
 
     #[test]
-    fn initial_keys_test_vectors() {
-        // Test vectors based on draft 27
-        const INITIAL_SALT: [u8; 20] = [
-            0xc3, 0xee, 0xf7, 0x12, 0xc7, 0x2e, 0xbb, 0x5a, 0x11, 0xa7, 0xd2, 0x43, 0x2b, 0xb4,
-            0x63, 0x65, 0xbe, 0xf9, 0xf5, 0x02,
+    fn short_packet_header_protection() {
+        // https://www.rfc-editor.org/rfc/rfc9001.html#name-chacha20-poly1305-short-hea
+
+        const PN: u64 = 654360564;
+        const SECRET: &[u8] = &[
+            0x9a, 0xc3, 0x12, 0xa7, 0xf8, 0x77, 0x46, 0x8e, 0xbe, 0x69, 0x42, 0x27, 0x48, 0xad,
+            0x00, 0xa1, 0x54, 0x43, 0xf1, 0x82, 0x03, 0xa0, 0x7d, 0x60, 0x60, 0xf6, 0x88, 0xf3,
+            0x0f, 0x21, 0x63, 0x2b,
         ];
 
-        const CONNECTION_ID: &[u8] = &[0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-        const PACKET_NUMBER: u64 = 42;
+        let secret = hkdf::Prk::new_less_safe(hkdf::HKDF_SHA256, SECRET);
+        use crate::suites::TLS13_CHACHA20_POLY1305_SHA256_INTERNAL;
+        let hpk = HeaderProtectionKey::new(TLS13_CHACHA20_POLY1305_SHA256_INTERNAL, &secret);
+        let packet = PacketKey::new(TLS13_CHACHA20_POLY1305_SHA256_INTERNAL, &secret);
 
-        let initial_salt = hkdf::Salt::new(hkdf::HKDF_SHA256, &INITIAL_SALT);
-        let server_keys = Keys::initial(&initial_salt, &CONNECTION_ID, false);
-        let client_keys = Keys::initial(&initial_salt, &CONNECTION_ID, true);
+        const PLAIN: &[u8] = &[0x42, 0x00, 0xbf, 0xf4, 0x01];
 
-        // Nonces
-        const SERVER_NONCE: [u8; 12] = [
-            0x5e, 0x5a, 0xe6, 0x51, 0xfd, 0x1e, 0x84, 0x95, 0xaf, 0x13, 0x50, 0xa1,
-        ];
-        assert_eq!(
-            server_keys
-                .local
-                .packet
-                .iv
-                .nonce_for(PACKET_NUMBER)
-                .as_ref(),
-            &SERVER_NONCE
-        );
-        assert_eq!(
-            client_keys
-                .remote
-                .packet
-                .iv
-                .nonce_for(PACKET_NUMBER)
-                .as_ref(),
-            &SERVER_NONCE
-        );
-        const CLIENT_NONCE: [u8; 12] = [
-            0x86, 0x81, 0x35, 0x94, 0x10, 0xa7, 0x0b, 0xb9, 0xc9, 0x2f, 0x04, 0x0a,
-        ];
-        assert_eq!(
-            server_keys
-                .remote
-                .packet
-                .iv
-                .nonce_for(PACKET_NUMBER)
-                .as_ref(),
-            &CLIENT_NONCE
-        );
-        assert_eq!(
-            client_keys
-                .local
-                .packet
-                .iv
-                .nonce_for(PACKET_NUMBER)
-                .as_ref(),
-            &CLIENT_NONCE
-        );
-
-        // Header encryption mask
-        const SAMPLE: &[u8] = &[
-            0x70, 0x02, 0x59, 0x6f, 0x99, 0xae, 0x67, 0xab, 0xf6, 0x5a, 0x58, 0x52, 0xf5, 0x4f,
-            0x58, 0xc3,
-        ];
-
-        const SERVER_MASK: [u8; 5] = [0x38, 0x16, 0x8a, 0x0c, 0x25];
-        assert_eq!(
-            server_keys
-                .local
-                .header
-                .new_mask(SAMPLE)
-                .unwrap(),
-            SERVER_MASK
-        );
-        assert_eq!(
-            client_keys
-                .remote
-                .header
-                .new_mask(SAMPLE)
-                .unwrap(),
-            SERVER_MASK
-        );
-        const CLIENT_MASK: [u8; 5] = [0xae, 0x96, 0x2e, 0x67, 0xec];
-        assert_eq!(
-            server_keys
-                .remote
-                .header
-                .new_mask(SAMPLE)
-                .unwrap(),
-            CLIENT_MASK
-        );
-        assert_eq!(
-            client_keys
-                .local
-                .header
-                .new_mask(SAMPLE)
-                .unwrap(),
-            CLIENT_MASK
-        );
-
-        const AAD: &[u8] = &[
-            0xc9, 0xff, 0x00, 0x00, 0x1b, 0x00, 0x08, 0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62,
-            0xb5, 0x00, 0x40, 0x74, 0x16, 0x8b,
-        ];
-        let aad = aead::Aad::from(AAD);
-        const PLAINTEXT: [u8; 12] = [
-            0x0d, 0x00, 0x00, 0x00, 0x00, 0x18, 0x41, 0x0a, 0x02, 0x00, 0x00, 0x56,
-        ];
-        let mut payload = PLAINTEXT;
-        let server_nonce = server_keys
-            .local
-            .packet
-            .iv
-            .nonce_for(PACKET_NUMBER);
-        let tag = server_keys
-            .local
-            .packet
-            .key
-            .seal_in_place_separate_tag(server_nonce, aad, &mut payload)
+        let mut buf = PLAIN.to_vec();
+        let (header, payload_tag) = buf.split_at_mut(4);
+        let tag = packet
+            .encrypt_in_place(PN, &*header, payload_tag)
             .unwrap();
-        assert_eq!(
-            payload,
-            [
-                0x0d, 0x91, 0x96, 0x31, 0xc0, 0xeb, 0x84, 0xf2, 0x88, 0x59, 0xfe, 0xc0
-            ]
-        );
-        assert_eq!(
-            tag.as_ref(),
-            &[
-                0xdf, 0xee, 0x06, 0x81, 0x9e, 0x7a, 0x08, 0x34, 0xe4, 0x94, 0x19, 0x79, 0x5f, 0xe0,
-                0xd7, 0x3f
-            ]
-        );
+        buf.extend(tag.as_ref());
 
-        let aad = aead::Aad::from(AAD);
-        let mut payload = PLAINTEXT;
-        let client_nonce = client_keys
-            .local
-            .packet
-            .iv
-            .nonce_for(PACKET_NUMBER);
-        let tag = client_keys
-            .local
-            .packet
-            .key
-            .seal_in_place_separate_tag(client_nonce, aad, &mut payload)
+        let (header, payload_tag) = buf.split_at_mut(4);
+        let (first, rest) = header.split_at_mut(1);
+        let sample = &payload_tag[1..1 + hpk.sample_len()];
+        hpk.mask_in_place(sample, &mut first[0], rest)
             .unwrap();
-        assert_eq!(
-            payload,
-            [
-                0x89, 0x6c, 0x66, 0x91, 0xe0, 0x9f, 0x47, 0x7a, 0x91, 0x42, 0xa4, 0x46
-            ]
-        );
-        assert_eq!(
-            tag.as_ref(),
-            &[
-                0xb6, 0xff, 0xef, 0x89, 0xd5, 0xcb, 0x53, 0xd0, 0x98, 0xf7, 0x40, 0xa, 0x8d, 0x97,
-                0x72, 0x6e
-            ]
-        );
+
+        const PROTECTED: &[u8] = &[
+            0x4c, 0xfe, 0x41, 0x89, 0x65, 0x5e, 0x5c, 0xd5, 0x5c, 0x41, 0xf6, 0x90, 0x80, 0x57,
+            0x5d, 0x79, 0x99, 0xc2, 0x5a, 0x5b, 0xfb,
+        ];
+
+        assert_eq!(&buf, PROTECTED);
+
+        let (header, payload_tag) = buf.split_at_mut(4);
+        let (first, rest) = header.split_at_mut(1);
+        let sample = &payload_tag[1..1 + hpk.sample_len()];
+        hpk.unmask_in_place(sample, &mut first[0], rest)
+            .unwrap();
+        let _ = packet
+            .decrypt_in_place(PN, &*header, payload_tag)
+            .unwrap();
+
+        assert_eq!(&buf[..PLAIN.len()], PLAIN);
     }
 
     #[test]
@@ -416,7 +584,7 @@ mod test {
             x_data == y_data
         }
 
-        let initial = Secrets {
+        let mut secrets = Secrets {
             // Constant dummy values for reproducibility
             client: hkdf::Prk::new_less_safe(
                 hkdf::HKDF_SHA256,
@@ -434,11 +602,13 @@ mod test {
                     0x4e, 0xb1, 0xe4, 0x38, 0xd8, 0x55,
                 ],
             ),
+            suite: TLS13_AES_128_GCM_SHA256_INTERNAL,
+            is_client: true,
         };
-        let updated = next_1rtt_secrets(hkdf::HKDF_SHA256, &initial);
+        secrets.update();
 
         assert!(equal_prk(
-            &updated.client,
+            &secrets.client,
             &hkdf::Prk::new_less_safe(
                 hkdf::HKDF_SHA256,
                 &[
@@ -449,7 +619,7 @@ mod test {
             )
         ));
         assert!(equal_prk(
-            &updated.server,
+            &secrets.server,
             &hkdf::Prk::new_less_safe(
                 hkdf::HKDF_SHA256,
                 &[
