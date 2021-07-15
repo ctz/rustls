@@ -348,10 +348,6 @@ impl Connection for ServerConnection {
             .export_keying_material(output, label, context)
     }
 
-    fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
-        self.inner.common_state.suite
-    }
-
     fn writer(&mut self) -> Writer {
         Writer::new(&mut self.inner)
     }

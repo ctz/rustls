@@ -232,11 +232,6 @@ pub trait Connection: DerefMut + Deref<Target = CommonState> + quic::QuicExt + S
         context: Option<&[u8]>,
     ) -> Result<(), Error>;
 
-    /// Retrieves the ciphersuite agreed with the peer.
-    ///
-    /// This returns None until the ciphersuite is agreed.
-    fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite>;
-
     /// This function uses `io` to complete any outstanding IO for
     /// this connection.
     ///
@@ -796,6 +791,13 @@ impl CommonState {
     /// were offered or accepted by the peer).
     pub fn alpn_protocol(&self) -> Option<&[u8]> {
         self.get_alpn_protocol()
+    }
+
+    /// Retrieves the ciphersuite agreed with the peer.
+    ///
+    /// This returns None until the ciphersuite is agreed.
+    pub fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
+        self.suite
     }
 
     /// Retrieves the protocol version agreed with the peer.

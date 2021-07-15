@@ -10,7 +10,7 @@ use std::net::TcpStream;
 use rustls;
 use webpki_roots;
 
-use rustls::{Connection, OwnedTrustAnchor};
+use rustls::OwnedTrustAnchor;
 
 fn main() {
     let mut root_store = rustls::RootCertStore::empty();
