@@ -157,36 +157,43 @@ impl BenchmarkParam {
 }
 
 static ALL_BENCHMARKS: &[BenchmarkParam] = &[
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::RSA,
         rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::ECDSA,
         rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::RSA,
         rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::RSA,
         rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::RSA,
         rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::ECDSA,
         rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         &rustls::version::TLS12,
     ),
+    #[cfg(feature = "tls12")]
     BenchmarkParam::new(
         KeyType::ECDSA,
         rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,

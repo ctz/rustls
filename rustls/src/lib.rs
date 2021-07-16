@@ -226,6 +226,12 @@
 //!   details of these.  You will only need this if you're writing a QUIC
 //!   implementation.
 //!
+//! - `tls12`: enables support for TLS version 1.2. This feature is in the default
+//!   set. Note that, due to the additive nature of Cargo features and because it
+//!   is enabled by default, other crates in your dependency graph could re-enable
+//!   it for your application. If you want to disable TLS 1.2 for security reasons,
+//!   consider explicitly enabling TLS 1.3 only in the config builder API.
+//!
 
 // Require docs for public APIs, deny unsafe code, etc.
 #![forbid(unsafe_code, unused_must_use, unstable_features)]
@@ -281,13 +287,13 @@ mod cipher;
 mod conn;
 mod error;
 mod hash_hs;
-mod key_schedule;
 mod limited_cache;
-mod prf;
 mod rand;
 mod record_layer;
 mod stream;
+#[cfg(feature = "tls12")]
 mod tls12;
+mod tls13;
 mod vecbuf;
 mod verify;
 #[cfg(test)]
@@ -345,10 +351,12 @@ pub use crate::server::{ClientHello, ProducesTickets, ResolvesServerCert};
 pub use crate::server::{ServerConfig, ServerConnection};
 pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{
-    BulkAlgorithm, SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite, ALL_CIPHER_SUITES,
-    DEFAULT_CIPHER_SUITES,
+    BulkAlgorithm, SupportedCipherSuite, ALL_CIPHER_SUITES, DEFAULT_CIPHER_SUITES,
 };
 pub use crate::ticketer::Ticketer;
+#[cfg(feature = "tls12")]
+pub use crate::tls12::Tls12CipherSuite;
+pub use crate::tls13::Tls13CipherSuite;
 pub use crate::verify::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
 };
@@ -358,21 +366,28 @@ pub use crate::versions::{SupportedProtocolVersion, ALL_VERSIONS, DEFAULT_VERSIO
 ///
 /// [`ALL_CIPHER_SUITES`] is provided as an array of all of these values.
 pub mod cipher_suite {
-    pub use crate::suites::TLS13_AES_128_GCM_SHA256;
-    pub use crate::suites::TLS13_AES_256_GCM_SHA384;
-    pub use crate::suites::TLS13_CHACHA20_POLY1305_SHA256;
-    pub use crate::suites::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
-    pub use crate::suites::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
-    pub use crate::suites::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256;
-    pub use crate::suites::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
-    pub use crate::suites::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
-    pub use crate::suites::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
+    #[cfg(feature = "tls12")]
+    pub use crate::tls12::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+    pub use crate::tls13::TLS13_AES_128_GCM_SHA256;
+    pub use crate::tls13::TLS13_AES_256_GCM_SHA384;
+    pub use crate::tls13::TLS13_CHACHA20_POLY1305_SHA256;
 }
 
 /// All defined protocol versions appear in this module.
 ///
 /// ALL_VERSIONS is a provided as an array of all of these values.
 pub mod version {
+    #[cfg(feature = "tls12")]
     pub use crate::versions::TLS12;
     pub use crate::versions::TLS13;
 }

@@ -1,5 +1,5 @@
 use crate::check::{check_message, inappropriate_message};
-use crate::conn::{ConnectionCommon, ConnectionRandoms, ConnectionSecrets};
+use crate::conn::{ConnectionCommon, ConnectionRandoms};
 use crate::error::Error;
 use crate::hash_hs::HandshakeHash;
 #[cfg(feature = "logging")]
@@ -14,14 +14,14 @@ use crate::msgs::handshake::{DigitallySignedStruct, ServerECDHParams};
 use crate::msgs::handshake::{HandshakeMessagePayload, HandshakePayload};
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
-use crate::suites::{SupportedCipherSuite, Tls12CipherSuite};
+use crate::suites::SupportedCipherSuite;
 use crate::ticketer::TimeBase;
-use crate::verify;
-use crate::{kx, tls12};
+use crate::tls12::{self, ConnectionSecrets, Tls12CipherSuite};
+use crate::{kx, verify};
 
 use super::hs::ClientContext;
-use crate::client::common::{ClientAuthDetails, ReceivedTicketDetails};
-use crate::client::common::{ServerCertDetails, ServerKxDetails};
+use crate::client::common::ClientAuthDetails;
+use crate::client::common::ServerCertDetails;
 use crate::client::{hs, ClientConfig, ServerName};
 
 use ring::constant_time;
@@ -189,6 +189,24 @@ mod server_hello {
                 must_issue_new_ticket,
                 server_cert_sct_list,
             }))
+        }
+    }
+}
+
+struct ReceivedTicketDetails {
+    new_ticket: Vec<u8>,
+    new_ticket_lifetime: u32,
+}
+
+impl ReceivedTicketDetails {
+    fn new() -> Self {
+        Self::from(Vec::new(), 0)
+    }
+
+    fn from(ticket: Vec<u8>, lifetime: u32) -> Self {
+        Self {
+            new_ticket: ticket,
+            new_ticket_lifetime: lifetime,
         }
     }
 }
@@ -528,6 +546,20 @@ fn emit_finished(
 
     transcript.add_message(&f);
     common.send_msg(f, true);
+}
+
+struct ServerKxDetails {
+    kx_params: Vec<u8>,
+    kx_sig: DigitallySignedStruct,
+}
+
+impl ServerKxDetails {
+    fn new(params: Vec<u8>, sig: DigitallySignedStruct) -> Self {
+        Self {
+            kx_params: params,
+            kx_sig: sig,
+        }
+    }
 }
 
 // --- Either a CertificateRequest, or a ServerHelloDone. ---

@@ -39,6 +39,30 @@ jobs:
       - name: cargo build (debug; default features)
         run: cargo build
 
+      - name: cargo test (debug; all features)
+        run: cargo test --all-features
+        env:
+          RUST_BACKTRACE: 1
+
+
+  features:
+    name: Features
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: cargo build (debug; default features)
+        run: cargo build
+
       - name: cargo test (debug; default features)
         run: cargo test
         env:
@@ -53,8 +77,8 @@ jobs:
         run: cargo build --no-default-features
         working-directory: rustls
 
-      - name: cargo test (debug; no default features; no run)
-        run: cargo test --no-default-features --no-run
+      - name: cargo test (debug; no default features)
+        run: cargo test --no-default-features
         working-directory: rustls
 
       - name: cargo test (release; no run)

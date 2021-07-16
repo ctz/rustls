@@ -1,11 +1,7 @@
 use crate::check::{check_message, inappropriate_handshake_message, inappropriate_message};
-use crate::cipher;
 use crate::conn::{ConnectionCommon, ConnectionRandoms};
 use crate::error::Error;
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
-use crate::key_schedule::{
-    KeyScheduleEarly, KeyScheduleHandshake, KeyScheduleNonSecret, KeyScheduleTraffic,
-};
 use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
@@ -25,7 +21,10 @@ use crate::msgs::handshake::{HasServerExtensions, ServerHelloPayload, SessionID}
 use crate::msgs::handshake::{PresharedKeyIdentity, PresharedKeyOffer};
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
-use crate::suites::Tls13CipherSuite;
+use crate::tls13::key_schedule::{
+    KeyScheduleEarly, KeyScheduleHandshake, KeyScheduleNonSecret, KeyScheduleTraffic,
+};
+use crate::tls13::Tls13CipherSuite;
 use crate::verify;
 #[cfg(feature = "quic")]
 use crate::{conn::Protocol, msgs::base::PayloadU16, quic};
@@ -153,13 +152,13 @@ pub(super) fn handle_server_hello(
     // Decrypt with the peer's key, encrypt with our own key
     cx.common
         .record_layer
-        .set_message_decrypter(cipher::new_tls13_read(suite, &server_key));
+        .set_message_decrypter(suite.derive_decrypter(&server_key));
 
     if !cx.data.early_data.is_enabled() {
         // Set the client encryption key for handshakes if early data is not used
         cx.common
             .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(suite, &client_key));
+            .set_message_encrypter(suite.derive_encrypter(&client_key));
     }
 
     #[cfg(feature = "quic")]
@@ -315,10 +314,7 @@ pub(super) fn derive_early_traffic_secret(
     // Set early data encryption key
     cx.common
         .record_layer
-        .set_message_encrypter(cipher::new_tls13_write(
-            resuming_suite,
-            &client_early_traffic_secret,
-        ));
+        .set_message_encrypter(resuming_suite.derive_encrypter(&client_early_traffic_secret));
 
     #[cfg(feature = "quic")]
     {
@@ -431,10 +427,10 @@ impl hs::State for ExpectEncryptedExtensions {
                 // If no early traffic, set the encryption key for handshakes
                 cx.common
                     .record_layer
-                    .set_message_encrypter(cipher::new_tls13_write(
-                        self.suite,
-                        self.key_schedule.client_key(),
-                    ));
+                    .set_message_encrypter(
+                        self.suite
+                            .derive_encrypter(self.key_schedule.client_key()),
+                    );
             }
 
             cx.data.server_cert_chain = resuming_session
@@ -896,10 +892,10 @@ impl hs::State for ExpectFinished {
             cx.data.early_data.finished();
             cx.common
                 .record_layer
-                .set_message_encrypter(cipher::new_tls13_write(
-                    st.suite,
-                    st.key_schedule.client_key(),
-                ));
+                .set_message_encrypter(
+                    st.suite
+                        .derive_encrypter(st.key_schedule.client_key()),
+                );
         }
 
         /* Send our authentication/finished messages.  These are still encrypted
@@ -926,11 +922,11 @@ impl hs::State for ExpectFinished {
 
         cx.common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(st.suite, &server_key));
+            .set_message_decrypter(st.suite.derive_decrypter(&server_key));
 
         cx.common
             .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(st.suite, &client_key));
+            .set_message_encrypter(st.suite.derive_encrypter(&client_key));
 
         cx.common.start_traffic();
 
@@ -1073,7 +1069,10 @@ impl ExpectTraffic {
             .next_server_application_traffic_secret();
         common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(self.suite, &new_read_key));
+            .set_message_decrypter(
+                self.suite
+                    .derive_decrypter(&new_read_key),
+            );
 
         Ok(())
     }
@@ -1130,7 +1129,7 @@ impl hs::State for ExpectTraffic {
                 .next_client_application_traffic_secret();
             common
                 .record_layer
-                .set_message_encrypter(cipher::new_tls13_write(self.suite, &write_key));
+                .set_message_encrypter(self.suite.derive_encrypter(&write_key));
         }
     }
 }

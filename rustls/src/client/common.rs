@@ -2,7 +2,6 @@
 use crate::log::trace;
 use crate::msgs::enums::ExtensionType;
 use crate::msgs::handshake::CertificatePayload;
-use crate::msgs::handshake::DigitallySignedStruct;
 use crate::msgs::handshake::SCTList;
 use crate::msgs::handshake::ServerExtension;
 use crate::sign;
@@ -37,20 +36,6 @@ impl ServerCertDetails {
     }
 }
 
-pub(super) struct ServerKxDetails {
-    pub(super) kx_params: Vec<u8>,
-    pub(super) kx_sig: DigitallySignedStruct,
-}
-
-impl ServerKxDetails {
-    pub(super) fn new(params: Vec<u8>, sig: DigitallySignedStruct) -> Self {
-        Self {
-            kx_params: params,
-            kx_sig: sig,
-        }
-    }
-}
-
 pub(super) struct ClientHelloDetails {
     pub(super) sent_extensions: Vec<ExtensionType>,
 }
@@ -82,24 +67,6 @@ impl ClientHelloDetails {
         }
 
         false
-    }
-}
-
-pub(super) struct ReceivedTicketDetails {
-    pub(super) new_ticket: Vec<u8>,
-    pub(super) new_ticket_lifetime: u32,
-}
-
-impl ReceivedTicketDetails {
-    pub(super) fn new() -> Self {
-        Self::from(Vec::new(), 0)
-    }
-
-    pub(super) fn from(ticket: Vec<u8>, lifetime: u32) -> Self {
-        Self {
-            new_ticket: ticket,
-            new_ticket_lifetime: lifetime,
-        }
     }
 }
 

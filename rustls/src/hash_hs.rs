@@ -151,6 +151,7 @@ impl HandshakeHash {
     /// Takes this object's buffer containing all handshake messages
     /// so far.  This method only works once; it resets the buffer
     /// to empty.
+    #[cfg(feature = "tls12")]
     pub(crate) fn take_handshake_buf(&mut self) -> Option<Vec<u8>> {
         self.client_auth.take()
     }
@@ -182,6 +183,7 @@ mod test {
         assert_eq!(h[3], 0x5c);
     }
 
+    #[cfg(feature = "tls12")]
     #[test]
     fn buffers_correctly() {
         let mut hhb = HandshakeHashBuffer::new();

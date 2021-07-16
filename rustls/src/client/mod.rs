@@ -32,6 +32,7 @@ mod hs;
 pub(super) mod builder;
 mod common;
 pub(super) mod handy;
+#[cfg(feature = "tls12")]
 mod tls12;
 mod tls13;
 

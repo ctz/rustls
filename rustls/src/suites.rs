@@ -1,11 +1,25 @@
-use crate::cipher::{self, Tls12AeadAlgorithm};
 use crate::msgs::enums::ProtocolVersion;
 use crate::msgs::enums::{CipherSuite, SignatureAlgorithm, SignatureScheme};
 use crate::msgs::handshake::DecomposedSignatureScheme;
-use crate::msgs::handshake::KeyExchangeAlgorithm;
-use crate::versions::{SupportedProtocolVersion, TLS12, TLS13};
-
-use std::fmt;
+#[cfg(feature = "tls12")]
+use crate::tls12::Tls12CipherSuite;
+#[cfg(feature = "tls12")]
+use crate::tls12::{
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    // TLS1.2 suites
+    TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+};
+use crate::tls13::Tls13CipherSuite;
+use crate::tls13::{
+    TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256,
+};
+#[cfg(feature = "tls12")]
+use crate::versions::TLS12;
+use crate::versions::{SupportedProtocolVersion, TLS13};
 
 /// Bulk symmetric encryption scheme used by a cipher suite.
 #[allow(non_camel_case_types)]
@@ -39,129 +53,17 @@ pub struct CipherSuiteCommon {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SupportedCipherSuite {
     /// A TLS 1.2 cipher suite
+    #[cfg(feature = "tls12")]
     Tls12(&'static Tls12CipherSuite),
     /// A TLS 1.3 cipher suite
     Tls13(&'static Tls13CipherSuite),
-}
-
-/// A TLS 1.3 cipher suite supported by rustls.
-pub struct Tls13CipherSuite {
-    /// Common cipher suite fields.
-    pub common: CipherSuiteCommon,
-    pub(crate) hkdf_algorithm: ring::hkdf::Algorithm,
-}
-
-impl Tls13CipherSuite {
-    /// Which hash function to use with this suite.
-    pub fn hash_algorithm(&self) -> &'static ring::digest::Algorithm {
-        self.hkdf_algorithm
-            .hmac_algorithm()
-            .digest_algorithm()
-    }
-
-    /// Can a session using suite self resume from suite prev?
-    pub fn can_resume_from(&self, prev: SupportedCipherSuite) -> Option<&'static Self> {
-        match prev {
-            SupportedCipherSuite::Tls13(inner)
-                if inner.hash_algorithm() == self.hash_algorithm() =>
-            {
-                Some(inner)
-            }
-            _ => None,
-        }
-    }
-}
-
-impl From<&'static Tls13CipherSuite> for SupportedCipherSuite {
-    fn from(s: &'static Tls13CipherSuite) -> Self {
-        Self::Tls13(s)
-    }
-}
-
-impl PartialEq for Tls13CipherSuite {
-    fn eq(&self, other: &Self) -> bool {
-        self.common.suite == other.common.suite
-    }
-}
-
-impl fmt::Debug for Tls13CipherSuite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Tls13CipherSuite")
-            .field("suite", &self.common.suite)
-            .field("bulk", &self.common.bulk)
-            .finish()
-    }
-}
-
-/// A TLS 1.2 cipher suite supported by rustls.
-pub struct Tls12CipherSuite {
-    /// Common cipher suite fields.
-    pub common: CipherSuiteCommon,
-    pub(crate) hmac_algorithm: ring::hmac::Algorithm,
-    /// How to exchange/agree keys.
-    pub kx: KeyExchangeAlgorithm,
-
-    /// How to sign messages for authentication.
-    pub sign: &'static [SignatureScheme],
-
-    /// How long the fixed part of the 'IV' is.
-    ///
-    /// This isn't usually an IV, but we continue the
-    /// terminology misuse to match the standard.
-    pub fixed_iv_len: usize,
-
-    /// This is a non-standard extension which extends the
-    /// key block to provide an initial explicit nonce offset,
-    /// in a deterministic and safe way.  GCM needs this,
-    /// chacha20poly1305 works this way by design.
-    pub explicit_nonce_len: usize,
-
-    pub(crate) aead_alg: &'static dyn Tls12AeadAlgorithm,
-}
-
-impl Tls12CipherSuite {
-    /// Resolve the set of supported `SignatureScheme`s from the
-    /// offered `SupportedSignatureSchemes`.  If we return an empty
-    /// set, the handshake terminates.
-    pub fn resolve_sig_schemes(&self, offered: &[SignatureScheme]) -> Vec<SignatureScheme> {
-        self.sign
-            .iter()
-            .filter(|pref| offered.contains(pref))
-            .cloned()
-            .collect()
-    }
-
-    /// Which hash function to use with this suite.
-    pub fn hash_algorithm(&self) -> &'static ring::digest::Algorithm {
-        self.hmac_algorithm.digest_algorithm()
-    }
-}
-
-impl From<&'static Tls12CipherSuite> for SupportedCipherSuite {
-    fn from(s: &'static Tls12CipherSuite) -> Self {
-        Self::Tls12(s)
-    }
-}
-
-impl PartialEq for Tls12CipherSuite {
-    fn eq(&self, other: &Self) -> bool {
-        self.common.suite == other.common.suite
-    }
-}
-
-impl fmt::Debug for Tls12CipherSuite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Tls12CipherSuite")
-            .field("suite", &self.common.suite)
-            .field("bulk", &self.common.bulk)
-            .finish()
-    }
 }
 
 impl SupportedCipherSuite {
     /// Which hash function to use with this suite.
     pub fn hash_algorithm(&self) -> &'static ring::digest::Algorithm {
         match self {
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(inner) => inner.hash_algorithm(),
             SupportedCipherSuite::Tls13(inner) => inner.hash_algorithm(),
         }
@@ -174,6 +76,7 @@ impl SupportedCipherSuite {
 
     pub(crate) fn common(&self) -> &CipherSuiteCommon {
         match self {
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(inner) => &inner.common,
             SupportedCipherSuite::Tls13(inner) => &inner.common,
         }
@@ -181,6 +84,7 @@ impl SupportedCipherSuite {
 
     pub(crate) fn tls13(&self) -> Option<&'static Tls13CipherSuite> {
         match self {
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(_) => None,
             SupportedCipherSuite::Tls13(inner) => Some(inner),
         }
@@ -189,6 +93,7 @@ impl SupportedCipherSuite {
     /// Return supported protocol version for the cipher suite.
     pub fn version(&self) -> &'static SupportedProtocolVersion {
         match self {
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(_) => &TLS12,
             SupportedCipherSuite::Tls13(_) => &TLS13,
         }
@@ -196,163 +101,17 @@ impl SupportedCipherSuite {
 
     /// Return true if this suite is usable for a key only offering `sig_alg`
     /// signatures.  This resolves to true for all TLS1.3 suites.
-    pub fn usable_for_signature_algorithm(&self, sig_alg: SignatureAlgorithm) -> bool {
+    pub fn usable_for_signature_algorithm(&self, _sig_alg: SignatureAlgorithm) -> bool {
         match self {
             SupportedCipherSuite::Tls13(_) => true, // no constraint expressed by ciphersuite (e.g., TLS1.3)
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(inner) => inner
                 .sign
                 .iter()
-                .any(|scheme| scheme.sign() == sig_alg),
+                .any(|scheme| scheme.sign() == _sig_alg),
         }
     }
 }
-
-static TLS12_ECDSA_SCHEMES: &[SignatureScheme] = &[
-    SignatureScheme::ED25519,
-    SignatureScheme::ECDSA_NISTP521_SHA512,
-    SignatureScheme::ECDSA_NISTP384_SHA384,
-    SignatureScheme::ECDSA_NISTP256_SHA256,
-];
-
-static TLS12_RSA_SCHEMES: &[SignatureScheme] = &[
-    SignatureScheme::RSA_PSS_SHA512,
-    SignatureScheme::RSA_PSS_SHA384,
-    SignatureScheme::RSA_PSS_SHA256,
-    SignatureScheme::RSA_PKCS1_SHA512,
-    SignatureScheme::RSA_PKCS1_SHA384,
-    SignatureScheme::RSA_PKCS1_SHA256,
-];
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256.
-pub static TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-            bulk: BulkAlgorithm::Chacha20Poly1305,
-            aead_algorithm: &ring::aead::CHACHA20_POLY1305,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_ECDSA_SCHEMES,
-        fixed_iv_len: 12,
-        explicit_nonce_len: 0,
-        aead_alg: &cipher::ChaCha20Poly1305,
-        hmac_algorithm: ring::hmac::HMAC_SHA256,
-    });
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-pub static TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-            bulk: BulkAlgorithm::Chacha20Poly1305,
-            aead_algorithm: &ring::aead::CHACHA20_POLY1305,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_RSA_SCHEMES,
-        fixed_iv_len: 12,
-        explicit_nonce_len: 0,
-        aead_alg: &cipher::ChaCha20Poly1305,
-        hmac_algorithm: ring::hmac::HMAC_SHA256,
-    });
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-pub static TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            bulk: BulkAlgorithm::Aes128Gcm,
-            aead_algorithm: &ring::aead::AES_128_GCM,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_RSA_SCHEMES,
-        fixed_iv_len: 4,
-        explicit_nonce_len: 8,
-        aead_alg: &cipher::AesGcm,
-        hmac_algorithm: ring::hmac::HMAC_SHA256,
-    });
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-pub static TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            bulk: BulkAlgorithm::Aes256Gcm,
-            aead_algorithm: &ring::aead::AES_256_GCM,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_RSA_SCHEMES,
-        fixed_iv_len: 4,
-        explicit_nonce_len: 8,
-        aead_alg: &cipher::AesGcm,
-        hmac_algorithm: ring::hmac::HMAC_SHA384,
-    });
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-pub static TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            bulk: BulkAlgorithm::Aes128Gcm,
-            aead_algorithm: &ring::aead::AES_128_GCM,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_ECDSA_SCHEMES,
-        fixed_iv_len: 4,
-        explicit_nonce_len: 8,
-        aead_alg: &cipher::AesGcm,
-        hmac_algorithm: ring::hmac::HMAC_SHA256,
-    });
-
-/// The TLS1.2 ciphersuite TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-pub static TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: SupportedCipherSuite =
-    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-            bulk: BulkAlgorithm::Aes256Gcm,
-            aead_algorithm: &ring::aead::AES_256_GCM,
-        },
-        kx: KeyExchangeAlgorithm::ECDHE,
-        sign: TLS12_ECDSA_SCHEMES,
-        fixed_iv_len: 4,
-        explicit_nonce_len: 8,
-        aead_alg: &cipher::AesGcm,
-        hmac_algorithm: ring::hmac::HMAC_SHA384,
-    });
-
-/// The TLS1.3 ciphersuite TLS_CHACHA20_POLY1305_SHA256
-pub static TLS13_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls13(&Tls13CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
-            bulk: BulkAlgorithm::Chacha20Poly1305,
-            aead_algorithm: &ring::aead::CHACHA20_POLY1305,
-        },
-        hkdf_algorithm: ring::hkdf::HKDF_SHA256,
-    });
-
-/// The TLS1.3 ciphersuite TLS_AES_256_GCM_SHA384
-pub static TLS13_AES_256_GCM_SHA384: SupportedCipherSuite =
-    SupportedCipherSuite::Tls13(&Tls13CipherSuite {
-        common: CipherSuiteCommon {
-            suite: CipherSuite::TLS13_AES_256_GCM_SHA384,
-            bulk: BulkAlgorithm::Aes256Gcm,
-            aead_algorithm: &ring::aead::AES_256_GCM,
-        },
-        hkdf_algorithm: ring::hkdf::HKDF_SHA384,
-    });
-
-pub(crate) static TLS13_AES_128_GCM_SHA256_INTERNAL: &Tls13CipherSuite = &Tls13CipherSuite {
-    common: CipherSuiteCommon {
-        suite: CipherSuite::TLS13_AES_128_GCM_SHA256,
-        bulk: BulkAlgorithm::Aes128Gcm,
-        aead_algorithm: &ring::aead::AES_128_GCM,
-    },
-    hkdf_algorithm: ring::hkdf::HKDF_SHA256,
-};
-
-/// The TLS1.3 ciphersuite TLS_AES_128_GCM_SHA256
-pub static TLS13_AES_128_GCM_SHA256: SupportedCipherSuite =
-    SupportedCipherSuite::Tls13(TLS13_AES_128_GCM_SHA256_INTERNAL);
 
 /// A list of all the cipher suites supported by rustls.
 pub static ALL_CIPHER_SUITES: &[SupportedCipherSuite] = &[
@@ -361,11 +120,17 @@ pub static ALL_CIPHER_SUITES: &[SupportedCipherSuite] = &[
     TLS13_AES_128_GCM_SHA256,
     TLS13_CHACHA20_POLY1305_SHA256,
     // TLS1.2 suites
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    #[cfg(feature = "tls12")]
     TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 ];
 
@@ -449,31 +214,25 @@ mod test {
     #[test]
     fn test_client_pref() {
         let client = vec![
-            CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
         ];
-        let server = vec![
-            TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        ];
+        let server = vec![TLS13_AES_256_GCM_SHA384, TLS13_AES_128_GCM_SHA256];
         let chosen = choose_ciphersuite_preferring_client(&client, &server);
         assert!(chosen.is_some());
-        assert_eq!(chosen.unwrap(), TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256);
+        assert_eq!(chosen.unwrap(), TLS13_AES_128_GCM_SHA256);
     }
 
     #[test]
     fn test_server_pref() {
         let client = vec![
-            CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
         ];
-        let server = vec![
-            TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        ];
+        let server = vec![TLS13_AES_256_GCM_SHA384, TLS13_AES_128_GCM_SHA256];
         let chosen = choose_ciphersuite_preferring_server(&client, &server);
         assert!(chosen.is_some());
-        assert_eq!(chosen.unwrap(), TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384);
+        assert_eq!(chosen.unwrap(), TLS13_AES_256_GCM_SHA384);
     }
 
     #[test]

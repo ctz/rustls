@@ -4,7 +4,6 @@ use crate::check::check_message;
 use crate::conn::{ConnectionCommon, ConnectionRandoms};
 use crate::error::{Error, WebPkiError};
 use crate::hash_hs::HandshakeHashBuffer;
-use crate::key_schedule::KeyScheduleEarly;
 use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
@@ -25,10 +24,13 @@ use crate::msgs::handshake::{Random, SessionID};
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
 use crate::ticketer::TimeBase;
+use crate::tls13::key_schedule::KeyScheduleEarly;
 use crate::SupportedCipherSuite;
 
+#[cfg(feature = "tls12")]
+use super::tls12;
 use crate::client::common::ClientHelloDetails;
-use crate::client::{tls12, tls13, ClientConfig, ClientConnectionData, ServerName};
+use crate::client::{tls13, ClientConfig, ClientConnectionData, ServerName};
 
 use std::sync::Arc;
 
@@ -626,6 +628,7 @@ impl State for ExpectServerHello {
                     self.sent_tls13_fake_ccs,
                 )
             }
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(suite) => tls12::CompleteServerHelloHandling {
                 config: self.config,
                 resuming_session: self.resuming_session,

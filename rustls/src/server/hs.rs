@@ -3,9 +3,12 @@ use crate::error::Error;
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
+#[cfg(feature = "tls12")]
+use crate::msgs::enums::CipherSuite;
+use crate::msgs::enums::Compression;
 use crate::msgs::enums::{AlertDescription, ExtensionType};
-use crate::msgs::enums::{CipherSuite, Compression};
 use crate::msgs::enums::{ContentType, HandshakeType, ProtocolVersion};
+#[cfg(feature = "tls12")]
 use crate::msgs::handshake::SessionID;
 use crate::msgs::handshake::{ClientHelloPayload, Random, ServerExtension};
 use crate::msgs::handshake::{ConvertProtocolNameList, ConvertServerNameList};
@@ -16,8 +19,10 @@ use crate::server::{ClientHello, ServerConfig};
 use crate::suites;
 use crate::SupportedCipherSuite;
 
+#[cfg(feature = "tls12")]
+use super::tls12;
 use crate::server::common::ActiveCertifiedKey;
-use crate::server::{tls12, tls13, ServerConnectionData};
+use crate::server::{tls13, ServerConnectionData};
 
 use std::sync::Arc;
 
@@ -95,7 +100,7 @@ pub(super) fn can_resume(
 pub(super) struct ExtensionProcessing {
     // extensions to reply with
     pub(super) exts: Vec<ServerExtension>,
-
+    #[cfg(feature = "tls12")]
     pub(super) send_ticket: bool,
 }
 
@@ -224,6 +229,7 @@ impl ExtensionProcessing {
         Ok(())
     }
 
+    #[cfg(feature = "tls12")]
     pub(super) fn process_tls12(
         &mut self,
         config: &ServerConfig,
@@ -269,7 +275,9 @@ pub(super) struct ExpectClientHello {
     pub(super) config: Arc<ServerConfig>,
     pub(super) extra_exts: Vec<ServerExtension>,
     pub(super) transcript: HandshakeHashOrBuffer,
+    #[cfg(feature = "tls12")]
     pub(super) session_id: SessionID,
+    #[cfg(feature = "tls12")]
     pub(super) using_ems: bool,
     pub(super) done_retry: bool,
     pub(super) send_ticket: bool,
@@ -287,7 +295,9 @@ impl ExpectClientHello {
             config,
             extra_exts,
             transcript: HandshakeHashOrBuffer::Buffer(transcript_buffer),
+            #[cfg(feature = "tls12")]
             session_id: SessionID::empty(),
+            #[cfg(feature = "tls12")]
             using_ems: false,
             done_retry: false,
             send_ticket: false,
@@ -499,6 +509,7 @@ impl State for ExpectClientHello {
                 extra_exts: self.extra_exts,
             }
             .handle_client_hello(cx, certkey, &m),
+            #[cfg(feature = "tls12")]
             SupportedCipherSuite::Tls12(suite) => tls12::CompleteClientHelloHandling {
                 config: self.config,
                 transcript,

@@ -4,8 +4,8 @@ use super::handshake::*;
 use super::persist::*;
 
 use crate::key::Certificate;
-use crate::suites::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
 use crate::ticketer::TimeBase;
+use crate::tls13::TLS13_AES_128_GCM_SHA256;
 
 use std::convert::TryInto;
 
@@ -26,8 +26,8 @@ fn clientsessionkey_cannot_be_read() {
 #[test]
 fn clientsessionvalue_is_debug() {
     let csv = ClientSessionValueWithResolvedCipherSuite::new(
-        ProtocolVersion::TLSv1_2,
-        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        ProtocolVersion::TLSv1_3,
+        TLS13_AES_128_GCM_SHA256,
         &SessionID::random().unwrap(),
         vec![],
         vec![1, 2, 3],
@@ -41,8 +41,8 @@ fn clientsessionvalue_is_debug() {
 fn serversessionvalue_is_debug() {
     let ssv = ServerSessionValue::new(
         None,
-        ProtocolVersion::TLSv1_2,
-        CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        ProtocolVersion::TLSv1_3,
+        CipherSuite::TLS13_AES_128_GCM_SHA256,
         vec![1, 2, 3],
         &None,
         None,

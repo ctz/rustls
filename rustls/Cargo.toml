@@ -18,10 +18,11 @@ sct = "0.7.0"
 webpki = { version = "0.22.0", features = ["alloc", "std"] }
 
 [features]
-default = ["logging"]
+default = ["logging", "tls12"]
 logging = ["log"]
 dangerous_configuration = []
 quic = []
+tls12 = []
 
 [dev-dependencies]
 env_logger = "0.9.0"

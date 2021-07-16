@@ -142,6 +142,7 @@ fn versions() {
     version_test(&[], &[], Some(ProtocolVersion::TLSv1_3));
 
     // client default, server 1.2 -> 1.2
+    #[cfg(feature = "tls12")]
     version_test(
         &[],
         &[&rustls::version::TLS12],
@@ -149,6 +150,7 @@ fn versions() {
     );
 
     // client 1.2, server default -> 1.2
+    #[cfg(feature = "tls12")]
     version_test(
         &[&rustls::version::TLS12],
         &[],
@@ -156,12 +158,15 @@ fn versions() {
     );
 
     // client 1.2, server 1.3 -> fail
+    #[cfg(feature = "tls12")]
     version_test(&[&rustls::version::TLS12], &[&rustls::version::TLS13], None);
 
     // client 1.3, server 1.2 -> fail
+    #[cfg(feature = "tls12")]
     version_test(&[&rustls::version::TLS13], &[&rustls::version::TLS12], None);
 
     // client 1.3, server 1.2+1.3 -> 1.3
+    #[cfg(feature = "tls12")]
     version_test(
         &[&rustls::version::TLS13],
         &[&rustls::version::TLS12, &rustls::version::TLS13],
@@ -169,6 +174,7 @@ fn versions() {
     );
 
     // client 1.2+1.3, server 1.2 -> 1.2
+    #[cfg(feature = "tls12")]
     version_test(
         &[&rustls::version::TLS13, &rustls::version::TLS12],
         &[&rustls::version::TLS12],
@@ -206,6 +212,7 @@ fn config_builder_for_client_rejects_empty_cipher_suites() {
     );
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn config_builder_for_client_rejects_incompatible_cipher_suites() {
     assert_eq!(
@@ -242,6 +249,7 @@ fn config_builder_for_server_rejects_empty_cipher_suites() {
     );
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn config_builder_for_server_rejects_incompatible_cipher_suites() {
     assert_eq!(
@@ -593,6 +601,7 @@ fn client_trims_terminating_dot() {
     }
 }
 
+#[cfg(feature = "tls12")]
 fn check_sigalgs_reduced_by_ciphersuite(
     kt: KeyType,
     suite: CipherSuite,
@@ -621,6 +630,7 @@ fn check_sigalgs_reduced_by_ciphersuite(
     assert_eq!(err.is_err(), true);
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn server_cert_resolve_reduces_sigalgs_for_rsa_ciphersuite() {
     check_sigalgs_reduced_by_ciphersuite(
@@ -637,6 +647,7 @@ fn server_cert_resolve_reduces_sigalgs_for_rsa_ciphersuite() {
     );
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn server_cert_resolve_reduces_sigalgs_for_ecdsa_ciphersuite() {
     check_sigalgs_reduced_by_ciphersuite(
@@ -1836,9 +1847,7 @@ fn make_disjoint_suite_configs() -> (ClientConfig, ServerConfig) {
     let server_config = finish_server_config(
         kt,
         ServerConfig::builder()
-            .with_cipher_suites(&[
-                rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-            ])
+            .with_cipher_suites(&[rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256])
             .with_safe_default_kx_groups()
             .with_safe_default_protocol_versions()
             .unwrap(),
@@ -1847,7 +1856,7 @@ fn make_disjoint_suite_configs() -> (ClientConfig, ServerConfig) {
     let client_config = finish_client_config(
         kt,
         ClientConfig::builder()
-            .with_cipher_suites(&[rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384])
+            .with_cipher_suites(&[rustls::cipher_suite::TLS13_AES_256_GCM_SHA384])
             .with_safe_default_kx_groups()
             .with_safe_default_protocol_versions()
             .unwrap(),
@@ -2173,6 +2182,7 @@ fn do_exporter_test(client_config: ClientConfig, server_config: ServerConfig) {
     assert_eq!(client_secret.to_vec(), server_secret.to_vec());
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn test_tls12_exporter() {
     for kt in ALL_KEY_TYPES.iter() {
@@ -2252,11 +2262,11 @@ fn find_suite(suite: CipherSuite) -> SupportedCipherSuite {
     panic!("find_suite given unsupported suite");
 }
 
-static TEST_CIPHERSUITES: [(
+static TEST_CIPHERSUITES: &[(
     &'static rustls::SupportedProtocolVersion,
     KeyType,
     CipherSuite,
-); 9] = [
+)] = &[
     (
         &rustls::version::TLS13,
         KeyType::RSA,
@@ -2272,31 +2282,37 @@ static TEST_CIPHERSUITES: [(
         KeyType::RSA,
         CipherSuite::TLS13_AES_128_GCM_SHA256,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::ECDSA,
         CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::RSA,
         CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::ECDSA,
         CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::ECDSA,
         CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::RSA,
         CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
     ),
+    #[cfg(feature = "tls12")]
     (
         &rustls::version::TLS12,
         KeyType::RSA,
@@ -2396,6 +2412,7 @@ impl KeyLog for KeyLogToVec {
     }
 }
 
+#[cfg(feature = "tls12")]
 #[test]
 fn key_log_for_tls12() {
     let client_key_log = Arc::new(KeyLogToVec::new("client"));

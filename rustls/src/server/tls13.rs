@@ -1,12 +1,10 @@
 #[cfg(feature = "quic")]
 use crate::check::check_message;
 use crate::check::{inappropriate_handshake_message, inappropriate_message};
-use crate::cipher;
 use crate::conn::{ConnectionCommon, ConnectionRandoms};
 use crate::error::Error;
 use crate::hash_hs::HandshakeHash;
 use crate::key::Certificate;
-use crate::key_schedule::{KeyScheduleTraffic, KeyScheduleTrafficWithClientFinishedPending};
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace, warn};
 use crate::msgs::codec::Codec;
@@ -19,7 +17,8 @@ use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
 use crate::rand;
 use crate::server::ServerConfig;
-use crate::suites::Tls13CipherSuite;
+use crate::tls13::key_schedule::{KeyScheduleTraffic, KeyScheduleTrafficWithClientFinishedPending};
+use crate::tls13::Tls13CipherSuite;
 use crate::verify;
 #[cfg(feature = "quic")]
 use crate::{conn::Protocol, msgs::handshake::NewSessionTicketExtension};
@@ -33,7 +32,6 @@ use ring::constant_time;
 pub(super) use client_hello::CompleteClientHelloHandling;
 
 mod client_hello {
-    use crate::key_schedule::{KeyScheduleEarly, KeyScheduleHandshake, KeyScheduleNonSecret};
     use crate::kx;
     use crate::msgs::base::{Payload, PayloadU8};
     use crate::msgs::ccs::ChangeCipherSpecPayload;
@@ -58,6 +56,9 @@ mod client_hello {
     use crate::quic;
     use crate::server::common::ActiveCertifiedKey;
     use crate::sign;
+    use crate::tls13::key_schedule::{
+        KeyScheduleEarly, KeyScheduleHandshake, KeyScheduleNonSecret,
+    };
 
     use super::*;
 
@@ -196,7 +197,9 @@ mod client_hello {
                         return Ok(Box::new(hs::ExpectClientHello {
                             config: self.config,
                             transcript: HandshakeHashOrBuffer::Hash(self.transcript),
+                            #[cfg(feature = "tls12")]
                             session_id: SessionID::empty(),
+                            #[cfg(feature = "tls12")]
                             using_ems: false,
                             done_retry: true,
                             send_ticket: self.send_ticket,
@@ -446,10 +449,10 @@ mod client_hello {
         // Encrypt with our own key, decrypt with the peer's key
         cx.common
             .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(suite, &server_key));
+            .set_message_encrypter(suite.derive_encrypter(&server_key));
         cx.common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(suite, &client_key));
+            .set_message_decrypter(suite.derive_decrypter(&client_key));
 
         #[cfg(feature = "quic")]
         {
@@ -708,7 +711,7 @@ mod client_hello {
             );
         cx.common
             .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(suite, &server_key));
+            .set_message_encrypter(suite.derive_encrypter(&server_key));
 
         #[cfg(feature = "quic")]
         {
@@ -969,7 +972,7 @@ impl hs::State for ExpectFinished {
         // Install keying to read future messages.
         cx.common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(self.suite, &client_key));
+            .set_message_decrypter(self.suite.derive_decrypter(&client_key));
 
         if self.send_ticket {
             Self::emit_ticket(
@@ -1045,7 +1048,10 @@ impl ExpectTraffic {
             .next_client_application_traffic_secret();
         common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(self.suite, &new_read_key));
+            .set_message_decrypter(
+                self.suite
+                    .derive_decrypter(&new_read_key),
+            );
 
         Ok(())
     }
@@ -1099,7 +1105,7 @@ impl hs::State for ExpectTraffic {
                 .next_server_application_traffic_secret();
             common
                 .record_layer
-                .set_message_encrypter(cipher::new_tls13_write(self.suite, &write_key));
+                .set_message_encrypter(self.suite.derive_encrypter(&write_key));
         }
     }
 }

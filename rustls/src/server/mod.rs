@@ -25,6 +25,7 @@ mod hs;
 pub(crate) mod builder;
 mod common;
 pub(crate) mod handy;
+#[cfg(feature = "tls12")]
 mod tls12;
 mod tls13;
 

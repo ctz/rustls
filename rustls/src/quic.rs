@@ -4,12 +4,13 @@ use crate::cipher::IvLen;
 pub use crate::client::ClientQuicExt;
 use crate::conn::ConnectionCommon;
 use crate::error::Error;
-use crate::key_schedule::hkdf_expand;
 use crate::msgs::base::Payload;
 use crate::msgs::enums::{AlertDescription, ContentType, ProtocolVersion};
 use crate::msgs::message::PlainMessage;
 pub use crate::server::ServerQuicExt;
-use crate::suites::{BulkAlgorithm, Tls13CipherSuite, TLS13_AES_128_GCM_SHA256_INTERNAL};
+use crate::suites::BulkAlgorithm;
+use crate::tls13::key_schedule::hkdf_expand;
+use crate::tls13::{Tls13CipherSuite, TLS13_AES_128_GCM_SHA256_INTERNAL};
 
 use ring::{aead, hkdf};
 
