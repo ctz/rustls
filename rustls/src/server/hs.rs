@@ -17,7 +17,8 @@ use crate::suites;
 use crate::SupportedCipherSuite;
 
 use crate::server::common::ActiveCertifiedKey;
-use crate::server::{tls12, tls13, ServerConnectionData};
+use crate::server::{tls12, tls13};
+use super::server_conn::ServerConnectionData;
 
 use std::sync::Arc;
 

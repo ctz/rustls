@@ -297,11 +297,9 @@ mod x509;
 mod check;
 mod bs_debug;
 mod builder;
-mod client;
 mod key;
 mod keylog;
 mod kx;
-mod server;
 mod suites;
 mod ticketer;
 mod versions;
@@ -320,12 +318,6 @@ pub use crate::anchors::{OwnedTrustAnchor, RootCertStore};
 pub use crate::builder::{
     ConfigBuilder, ConfigSide, WantsCipherSuites, WantsKxGroups, WantsVerifier, WantsVersions,
 };
-pub use crate::client::builder::WantsClientCert;
-pub use crate::client::handy::{ClientSessionMemoryCache, NoClientSessionStorage};
-pub use crate::client::ResolvesClientCert;
-pub use crate::client::ServerName;
-pub use crate::client::StoresClientSessions;
-pub use crate::client::{ClientConfig, ClientConnection, WriteEarlyData};
 pub use crate::conn::{Connection, IoState, Reader, Writer};
 pub use crate::error::Error;
 pub use crate::error::WebPkiError;
@@ -337,22 +329,75 @@ pub use crate::msgs::enums::CipherSuite;
 pub use crate::msgs::enums::ProtocolVersion;
 pub use crate::msgs::enums::SignatureScheme;
 pub use crate::msgs::handshake::DistinguishedNames;
-pub use crate::server::builder::WantsServerCert;
-pub use crate::server::handy::ResolvesServerCertUsingSni;
-pub use crate::server::handy::{NoServerSessionStorage, ServerSessionMemoryCache};
-pub use crate::server::StoresServerSessions;
-pub use crate::server::{ClientHello, ProducesTickets, ResolvesServerCert};
-pub use crate::server::{ServerConfig, ServerConnection};
 pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{
     BulkAlgorithm, SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite, ALL_CIPHER_SUITES,
     DEFAULT_CIPHER_SUITES,
 };
 pub use crate::ticketer::Ticketer;
-pub use crate::verify::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
-};
 pub use crate::versions::{SupportedProtocolVersion, ALL_VERSIONS, DEFAULT_VERSIONS};
+
+/// Items for use in a client.
+pub mod client {
+    pub(super) mod builder;
+    mod client_conn;
+    mod common;
+    pub(super) mod handy;
+    mod hs;
+    mod tls12;
+    mod tls13;
+
+    pub use builder::WantsClientCert;
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+    pub use client_conn::ClientQuicExt;
+    pub use client_conn::ResolvesClientCert;
+    pub use client_conn::ServerName;
+    pub use client_conn::StoresClientSessions;
+    pub use client_conn::{ClientConfig, ClientConnection, WriteEarlyData};
+    pub use handy::{ClientSessionMemoryCache, NoClientSessionStorage};
+
+    #[cfg(feature = "dangerous_configuration")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
+    pub use crate::verify::{
+        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
+    };
+    #[cfg(feature = "dangerous_configuration")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
+    pub use client_conn::danger::DangerousClientConfig;
+}
+
+pub use client::{ClientConfig, ClientConnection, ServerName};
+
+/// Items for use in a server.
+pub mod server {
+    pub(crate) mod builder;
+    mod common;
+    pub(crate) mod handy;
+    mod hs;
+    mod server_conn;
+    mod tls12;
+    mod tls13;
+
+    pub use crate::verify::{
+        AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
+    };
+    pub use builder::WantsServerCert;
+    pub use handy::ResolvesServerCertUsingSni;
+    pub use handy::{NoServerSessionStorage, ServerSessionMemoryCache};
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+    pub use server_conn::ServerQuicExt;
+    pub use server_conn::StoresServerSessions;
+    pub use server_conn::{ClientHello, ProducesTickets, ResolvesServerCert};
+    pub use server_conn::{ServerConfig, ServerConnection};
+
+    #[cfg(feature = "dangerous_configuration")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
+    pub use crate::verify::{ClientCertVerified, ClientCertVerifier, DnsName};
+}
+
+pub use server::{ServerConfig, ServerConnection};
 
 /// All defined ciphersuites appear in this module.
 ///
@@ -403,16 +448,6 @@ mod quic {
     impl QuicExt for super::ServerConnection {}
 }
 
-#[cfg(feature = "dangerous_configuration")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
-pub use crate::client::danger::DangerousClientConfig;
-#[cfg(feature = "dangerous_configuration")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
-pub use crate::verify::{
-    ClientCertVerified, ClientCertVerifier, DnsName, HandshakeSignatureValid, ServerCertVerified,
-    ServerCertVerifier, WebPkiVerifier,
-};
-
 /// This is the rustls manual.
 pub mod manual;
 
@@ -420,13 +455,13 @@ pub mod manual;
 #[allow(clippy::upper_case_acronyms)]
 #[doc(hidden)]
 #[deprecated(since = "0.20.0", note = "Use ResolvesServerCertUsingSni")]
-pub type ResolvesServerCertUsingSNI = ResolvesServerCertUsingSni;
+pub type ResolvesServerCertUsingSNI = server::ResolvesServerCertUsingSni;
 #[allow(clippy::upper_case_acronyms)]
 #[cfg(feature = "dangerous_configuration")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
 #[doc(hidden)]
-#[deprecated(since = "0.20.0", note = "Use WebPkiVerifier")]
-pub type WebPKIVerifier = WebPkiVerifier;
+#[deprecated(since = "0.20.0", note = "Use client::WebPkiVerifier")]
+pub type WebPKIVerifier = client::WebPkiVerifier;
 #[allow(clippy::upper_case_acronyms)]
 #[doc(hidden)]
 #[deprecated(since = "0.20.0", note = "Use TlsError")]

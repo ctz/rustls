@@ -20,12 +20,11 @@ use docopt::Docopt;
 use env_logger;
 
 use rustls;
-use rustls_pemfile;
-
-use rustls::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, Connection, NoClientAuth,
-    RootCertStore,
+use rustls::server::{
+    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
 };
+use rustls::{Connection, RootCertStore};
+use rustls_pemfile;
 
 // Token for our listening socket.
 const LISTENER: mio::Token = mio::Token(0);
@@ -610,7 +609,7 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
     config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     if args.flag_resumption {
-        config.session_storage = rustls::ServerSessionMemoryCache::new(256);
+        config.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
     }
 
     if args.flag_tickets {

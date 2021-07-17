@@ -102,7 +102,7 @@ impl client::ResolvesClientCert for AlwaysResolvesClientCert {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::StoresClientSessions;
+    use crate::client::StoresClientSessions;
 
     #[test]
     fn test_noclientsessionstorage_drops_put() {

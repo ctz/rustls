@@ -6,18 +6,23 @@ use rustls_pemfile;
 
 use rustls::internal::msgs::codec::Reader;
 use rustls::internal::msgs::message::{Message, OpaqueMessage, PlainMessage};
+use rustls::server::AllowAnyAuthenticatedClient;
 use rustls::Connection;
 use rustls::Error;
-use rustls::{AllowAnyAuthenticatedClient, RootCertStore};
+use rustls::RootCertStore;
 use rustls::{Certificate, PrivateKey};
 use rustls::{ClientConfig, ClientConnection};
 use rustls::{ServerConfig, ServerConnection};
 
 #[cfg(feature = "dangerous_configuration")]
+use rustls::client::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
+};
+#[cfg(feature = "dangerous_configuration")]
+use rustls::server::{ClientCertVerified, ClientCertVerifier};
+#[cfg(feature = "dangerous_configuration")]
 use rustls::{
-    internal::msgs::handshake::DigitallySignedStruct, ClientCertVerified, ClientCertVerifier,
-    DistinguishedNames, HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-    SignatureScheme, WebPkiVerifier,
+    internal::msgs::handshake::DigitallySignedStruct, DistinguishedNames, SignatureScheme,
 };
 
 macro_rules! embed_files {
@@ -531,7 +536,7 @@ pub struct MockClientVerifier {
 
 #[cfg(feature = "dangerous_configuration")]
 impl ClientCertVerifier for MockClientVerifier {
-    fn client_auth_mandatory(&self, sni: Option<&rustls::DnsName>) -> Option<bool> {
+    fn client_auth_mandatory(&self, sni: Option<&rustls::server::DnsName>) -> Option<bool> {
         // This is just an added 'test' to make sure we plumb through the SNI,
         // although its valid for it to be None, its just our tests should (as of now) always provide it
         assert!(sni.is_some());
@@ -540,7 +545,7 @@ impl ClientCertVerifier for MockClientVerifier {
 
     fn client_auth_root_subjects(
         &self,
-        sni: Option<&rustls::DnsName>,
+        sni: Option<&rustls::server::DnsName>,
     ) -> Option<DistinguishedNames> {
         assert!(sni.is_some());
         self.subjects.as_ref().cloned()
@@ -550,7 +555,7 @@ impl ClientCertVerifier for MockClientVerifier {
         &self,
         _end_entity: &Certificate,
         _intermediates: &[Certificate],
-        sni: Option<&rustls::DnsName>,
+        sni: Option<&rustls::server::DnsName>,
         _now: std::time::SystemTime,
     ) -> Result<ClientCertVerified, Error> {
         assert!(sni.is_some());

@@ -19,6 +19,7 @@ use crate::versions;
 
 #[cfg(feature = "quic")]
 use crate::quic;
+use super::hs;
 
 use std::convert::TryFrom;
 use std::fmt;
@@ -26,14 +27,6 @@ use std::io::{self, IoSlice};
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
-
-#[macro_use]
-mod hs;
-pub(super) mod builder;
-mod common;
-pub(super) mod handy;
-mod tls12;
-mod tls13;
 
 /// A trait for the ability to store client session data.
 /// The keys and values are opaque.
@@ -97,14 +90,14 @@ pub trait ResolvesClientCert: Send + Sync {
 #[derive(Clone)]
 pub struct ClientConfig {
     /// List of ciphersuites, in preference order.
-    cipher_suites: Vec<SupportedCipherSuite>,
+    pub(super) cipher_suites: Vec<SupportedCipherSuite>,
 
     /// List of supported key exchange algorithms, in preference order -- the
     /// first element is the highest priority.
     ///
     /// The first element in this list is the _default key share algorithm_,
     /// and in TLS1.3 a key share for it is sent in the client hello.
-    kx_groups: Vec<&'static SupportedKxGroup>,
+    pub(super) kx_groups: Vec<&'static SupportedKxGroup>,
 
     /// Which ALPN protocols we include in our client hello.
     /// If empty, no ALPN extension is sent.
@@ -134,7 +127,7 @@ pub struct ClientConfig {
 
     /// Supported versions, in no particular order.  The default
     /// is all supported versions.
-    versions: versions::EnabledVersions,
+    pub(super) versions: versions::EnabledVersions,
 
     /// Whether to send the Server Name Indication (SNI) extension
     /// during the client handshake.
@@ -143,7 +136,7 @@ pub struct ClientConfig {
     pub enable_sni: bool,
 
     /// How to verify the server certificate chain.
-    verifier: Arc<dyn verify::ServerCertVerifier>,
+    pub(super) verifier: Arc<dyn verify::ServerCertVerifier>,
 
     /// How to output key material for debugging.  The default
     /// does nothing.
@@ -186,7 +179,7 @@ impl ClientConfig {
         danger::DangerousClientConfig { cfg: self }
     }
 
-    fn find_cipher_suite(&self, suite: CipherSuite) -> Option<SupportedCipherSuite> {
+    pub(super) fn find_cipher_suite(&self, suite: CipherSuite) -> Option<SupportedCipherSuite> {
         self.cipher_suites
             .iter()
             .copied()
@@ -312,7 +305,7 @@ impl EarlyData {
         }
     }
 
-    fn is_enabled(&self) -> bool {
+    pub(super) fn is_enabled(&self) -> bool {
         matches!(self.state, EarlyDataState::Ready | EarlyDataState::Accepted)
     }
 
@@ -323,24 +316,24 @@ impl EarlyData {
         )
     }
 
-    fn enable(&mut self, max_data: usize) {
+    pub(super) fn enable(&mut self, max_data: usize) {
         assert_eq!(self.state, EarlyDataState::Disabled);
         self.state = EarlyDataState::Ready;
         self.left = max_data;
     }
 
-    fn rejected(&mut self) {
+    pub(super) fn rejected(&mut self) {
         trace!("EarlyData rejected");
         self.state = EarlyDataState::Rejected;
     }
 
-    fn accepted(&mut self) {
+    pub(super) fn accepted(&mut self) {
         trace!("EarlyData accepted");
         assert_eq!(self.state, EarlyDataState::Ready);
         self.state = EarlyDataState::Accepted;
     }
 
-    fn finished(&mut self) {
+    pub(super) fn finished(&mut self) {
         trace!("EarlyData finished");
         self.state = match self.state {
             EarlyDataState::Accepted => EarlyDataState::AcceptedFinished,
@@ -595,10 +588,10 @@ impl PlaintextSink for ClientConnection {
     }
 }
 
-struct ClientConnectionData {
-    server_cert_chain: CertificatePayload,
-    early_data: EarlyData,
-    resumption_ciphersuite: Option<SupportedCipherSuite>,
+pub(super) struct ClientConnectionData {
+    pub(super) server_cert_chain: CertificatePayload,
+    pub(super) early_data: EarlyData,
+    pub(super) resumption_ciphersuite: Option<SupportedCipherSuite>,
 }
 
 impl ClientConnectionData {

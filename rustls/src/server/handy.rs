@@ -174,7 +174,7 @@ mod test {
     use super::*;
     use crate::server::ProducesTickets;
     use crate::server::ResolvesServerCert;
-    use crate::StoresServerSessions;
+    use crate::server::StoresServerSessions;
 
     #[test]
     fn test_noserversessionstorage_drops_put() {

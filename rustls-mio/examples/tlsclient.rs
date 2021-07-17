@@ -267,7 +267,7 @@ impl PersistCache {
     }
 }
 
-impl rustls::StoresClientSessions for PersistCache {
+impl rustls::client::StoresClientSessions for PersistCache {
     /// put: insert into in-memory cache, and perhaps persist to disk.
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         self.cache
@@ -442,7 +442,7 @@ mod danger {
 
     pub struct NoCertificateVerification {}
 
-    impl rustls::ServerCertVerifier for NoCertificateVerification {
+    impl rustls::client::ServerCertVerifier for NoCertificateVerification {
         fn verify_server_cert(
             &self,
             _end_entity: &rustls::Certificate,
@@ -451,8 +451,8 @@ mod danger {
             _scts: &mut dyn Iterator<Item = &[u8]>,
             _ocsp: &[u8],
             _now: std::time::SystemTime,
-        ) -> Result<rustls::ServerCertVerified, rustls::Error> {
-            Ok(rustls::ServerCertVerified::assertion())
+        ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::ServerCertVerified::assertion())
         }
     }
 }

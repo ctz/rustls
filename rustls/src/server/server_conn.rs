@@ -15,18 +15,12 @@ use crate::verify;
 #[cfg(feature = "quic")]
 use crate::{conn::Protocol, quic};
 
+use super::hs;
+
 use std::fmt;
 use std::io::{self, IoSlice};
 use std::marker::PhantomData;
 use std::sync::Arc;
-
-#[macro_use]
-mod hs;
-pub(crate) mod builder;
-mod common;
-pub(crate) mod handy;
-mod tls12;
-mod tls13;
 
 /// A trait for the ability to store server session data.
 ///
@@ -113,7 +107,7 @@ pub struct ClientHello<'a> {
 
 impl<'a> ClientHello<'a> {
     /// Creates a new ClientHello
-    fn new(
+    pub(super) fn new(
         server_name: Option<webpki::DnsNameRef<'a>>,
         signature_schemes: &'a [SignatureScheme],
         alpn: Option<&'a [&'a [u8]]>,
@@ -165,13 +159,13 @@ impl<'a> ClientHello<'a> {
 #[derive(Clone)]
 pub struct ServerConfig {
     /// List of ciphersuites, in preference order.
-    cipher_suites: Vec<SupportedCipherSuite>,
+    pub(super) cipher_suites: Vec<SupportedCipherSuite>,
 
     /// List of supported key exchange groups.
     ///
     /// The first is the highest priority: they will be
     /// offered to the client in this order.
-    kx_groups: Vec<&'static SupportedKxGroup>,
+    pub(super) kx_groups: Vec<&'static SupportedKxGroup>,
 
     /// Ignore the client's ciphersuite order. Instead,
     /// choose the top ciphersuite in the server list
@@ -202,10 +196,10 @@ pub struct ServerConfig {
 
     /// Supported protocol versions, in no particular order.
     /// The default is all supported versions.
-    versions: crate::versions::EnabledVersions,
+    pub(super) versions: crate::versions::EnabledVersions,
 
     /// How to verify client certificates.
-    verifier: Arc<dyn verify::ClientCertVerifier>,
+    pub(super) verifier: Arc<dyn verify::ClientCertVerifier>,
 
     /// How to output key material for debugging.  The default
     /// does nothing.
@@ -435,23 +429,23 @@ impl fmt::Debug for ServerConnection {
 }
 
 #[derive(Default)]
-struct ServerConnectionData {
-    sni: Option<webpki::DnsName>,
-    received_resumption_data: Option<Vec<u8>>,
-    resumption_data: Vec<u8>,
-    client_cert_chain: Option<Vec<key::Certificate>>,
+pub(super) struct ServerConnectionData {
+    pub(super) sni: Option<webpki::DnsName>,
+    pub(super) received_resumption_data: Option<Vec<u8>>,
+    pub(super) resumption_data: Vec<u8>,
+    pub(super) client_cert_chain: Option<Vec<key::Certificate>>,
 
     #[allow(dead_code)] // only supported for QUIC currently
     /// Whether to reject early data even if it would otherwise be accepted
-    reject_early_data: bool,
+    pub(super) reject_early_data: bool,
 }
 
 impl ServerConnectionData {
-    fn get_sni_str(&self) -> Option<&str> {
+    pub(super) fn get_sni_str(&self) -> Option<&str> {
         self.sni.as_ref().map(AsRef::as_ref)
     }
 
-    fn get_sni(&self) -> Option<verify::DnsName> {
+    pub(super) fn get_sni(&self) -> Option<verify::DnsName> {
         self.sni
             .as_ref()
             .map(|name| verify::DnsName(name.clone()))

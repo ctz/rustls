@@ -10,23 +10,24 @@ use std::sync::Mutex;
 
 use rustls;
 
+use rustls::client::ResolvesClientCert;
 use rustls::internal::msgs::{codec::Codec, persist::ClientSessionValue};
 #[cfg(feature = "quic")]
 use rustls::quic::{self, ClientQuicExt, QuicExt, ServerQuicExt};
+use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign;
-use rustls::ClientHello;
 use rustls::Connection;
 use rustls::Error;
 use rustls::KeyLog;
 use rustls::{CipherSuite, ProtocolVersion, SignatureScheme};
-use rustls::{ClientConfig, ClientConnection, ResolvesClientCert};
-use rustls::{ResolvesServerCert, ServerConfig, ServerConnection};
+use rustls::{ClientConfig, ClientConnection};
+use rustls::{ServerConfig, ServerConnection};
 use rustls::{Stream, StreamOwned};
 use rustls::{SupportedCipherSuite, ALL_CIPHER_SUITES};
 use rustls::{WebPkiError, WebPkiOp};
 
 #[cfg(feature = "dangerous_configuration")]
-use rustls::ClientCertVerified;
+use rustls::server::ClientCertVerified;
 
 #[allow(dead_code)]
 mod common;
@@ -798,7 +799,7 @@ mod test_clientverifier {
 
     // Client is authorized!
     fn ver_ok() -> Result<ClientCertVerified, Error> {
-        Ok(rustls::ClientCertVerified::assertion())
+        Ok(rustls::server::ClientCertVerified::assertion())
     }
 
     // Use when we shouldn't even attempt verification
@@ -2014,7 +2015,7 @@ fn server_exposes_offered_sni_smashed_to_lowercase() {
 #[test]
 fn server_exposes_offered_sni_even_if_resolver_fails() {
     let kt = KeyType::RSA;
-    let resolver = rustls::ResolvesServerCertUsingSni::new();
+    let resolver = rustls::server::ResolvesServerCertUsingSni::new();
 
     let mut server_config = make_server_config(kt);
     server_config.cert_resolver = Arc::new(resolver);
@@ -2042,7 +2043,7 @@ fn server_exposes_offered_sni_even_if_resolver_fails() {
 #[test]
 fn sni_resolver_works() {
     let kt = KeyType::RSA;
-    let mut resolver = rustls::ResolvesServerCertUsingSni::new();
+    let mut resolver = rustls::server::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
     let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
     resolver
@@ -2077,7 +2078,7 @@ fn sni_resolver_works() {
 #[test]
 fn sni_resolver_rejects_wrong_names() {
     let kt = KeyType::RSA;
-    let mut resolver = rustls::ResolvesServerCertUsingSni::new();
+    let mut resolver = rustls::server::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
     let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
 
@@ -2109,7 +2110,7 @@ fn sni_resolver_rejects_wrong_names() {
 #[test]
 fn sni_resolver_rejects_bad_certs() {
     let kt = KeyType::RSA;
-    let mut resolver = rustls::ResolvesServerCertUsingSni::new();
+    let mut resolver = rustls::server::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
     let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
 
@@ -2650,7 +2651,7 @@ fn vectored_write_with_slow_client() {
 }
 
 struct ServerStorage {
-    storage: Arc<dyn rustls::StoresServerSessions>,
+    storage: Arc<dyn rustls::server::StoresServerSessions>,
     put_count: AtomicUsize,
     get_count: AtomicUsize,
     take_count: AtomicUsize,
@@ -2659,7 +2660,7 @@ struct ServerStorage {
 impl ServerStorage {
     fn new() -> Self {
         ServerStorage {
-            storage: rustls::ServerSessionMemoryCache::new(1024),
+            storage: rustls::server::ServerSessionMemoryCache::new(1024),
             put_count: AtomicUsize::new(0),
             get_count: AtomicUsize::new(0),
             take_count: AtomicUsize::new(0),
@@ -2687,7 +2688,7 @@ impl fmt::Debug for ServerStorage {
     }
 }
 
-impl rustls::StoresServerSessions for ServerStorage {
+impl rustls::server::StoresServerSessions for ServerStorage {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         self.put_count
             .fetch_add(1, Ordering::SeqCst);
@@ -2708,7 +2709,7 @@ impl rustls::StoresServerSessions for ServerStorage {
 }
 
 struct ClientStorage {
-    storage: Arc<dyn rustls::StoresClientSessions>,
+    storage: Arc<dyn rustls::client::StoresClientSessions>,
     put_count: AtomicUsize,
     get_count: AtomicUsize,
     last_put_key: Mutex<Option<Vec<u8>>>,
@@ -2717,7 +2718,7 @@ struct ClientStorage {
 impl ClientStorage {
     fn new() -> Self {
         ClientStorage {
-            storage: rustls::ClientSessionMemoryCache::new(1024),
+            storage: rustls::client::ClientSessionMemoryCache::new(1024),
             put_count: AtomicUsize::new(0),
             get_count: AtomicUsize::new(0),
             last_put_key: Mutex::new(None),
@@ -2742,7 +2743,7 @@ impl fmt::Debug for ClientStorage {
     }
 }
 
-impl rustls::StoresClientSessions for ClientStorage {
+impl rustls::client::StoresClientSessions for ClientStorage {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         self.put_count
             .fetch_add(1, Ordering::SeqCst);

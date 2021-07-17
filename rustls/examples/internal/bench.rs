@@ -11,13 +11,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustls;
-use rustls::ClientSessionMemoryCache;
+use rustls::client::{ClientSessionMemoryCache, NoClientSessionStorage};
+use rustls::server::{
+    AllowAnyAuthenticatedClient, NoClientAuth, NoServerSessionStorage, ServerSessionMemoryCache,
+};
 use rustls::Connection;
-use rustls::NoClientSessionStorage;
-use rustls::NoServerSessionStorage;
-use rustls::ServerSessionMemoryCache;
+use rustls::RootCertStore;
 use rustls::Ticketer;
-use rustls::{AllowAnyAuthenticatedClient, NoClientAuth, RootCertStore};
 use rustls::{ClientConfig, ClientConnection};
 use rustls::{ServerConfig, ServerConnection};
 

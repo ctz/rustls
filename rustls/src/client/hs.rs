@@ -28,7 +28,8 @@ use crate::ticketer::TimeBase;
 use crate::SupportedCipherSuite;
 
 use crate::client::common::ClientHelloDetails;
-use crate::client::{tls12, tls13, ClientConfig, ClientConnectionData, ServerName};
+use crate::client::{tls12, tls13, ClientConfig, ServerName};
+use crate::client::client_conn::ClientConnectionData;
 
 use std::sync::Arc;
 

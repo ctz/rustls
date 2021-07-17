@@ -12,7 +12,7 @@ use rustls::internal::msgs::enums::ProtocolVersion;
 use rustls::quic;
 use rustls::quic::ClientQuicExt;
 use rustls::quic::ServerQuicExt;
-use rustls::ClientHello;
+use rustls::server::ClientHello;
 use std::convert::TryInto;
 use std::env;
 use std::fs;
@@ -190,18 +190,18 @@ struct DummyClientAuth {
     mandatory: bool,
 }
 
-impl rustls::ClientCertVerifier for DummyClientAuth {
+impl rustls::server::ClientCertVerifier for DummyClientAuth {
     fn offer_client_auth(&self) -> bool {
         true
     }
 
-    fn client_auth_mandatory(&self, _sni: Option<&rustls::DnsName>) -> Option<bool> {
+    fn client_auth_mandatory(&self, _sni: Option<&rustls::server::DnsName>) -> Option<bool> {
         Some(self.mandatory)
     }
 
     fn client_auth_root_subjects(
         &self,
-        _sni: Option<&rustls::DnsName>,
+        _sni: Option<&rustls::server::DnsName>,
     ) -> Option<rustls::DistinguishedNames> {
         Some(rustls::DistinguishedNames::new())
     }
@@ -210,10 +210,10 @@ impl rustls::ClientCertVerifier for DummyClientAuth {
         &self,
         _end_entity: &rustls::Certificate,
         _intermediates: &[rustls::Certificate],
-        _sni: Option<&rustls::DnsName>,
+        _sni: Option<&rustls::server::DnsName>,
         _now: SystemTime,
-    ) -> Result<rustls::ClientCertVerified, rustls::Error> {
-        Ok(rustls::ClientCertVerified::assertion())
+    ) -> Result<rustls::server::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::ClientCertVerified::assertion())
     }
 }
 
@@ -221,7 +221,7 @@ struct DummyServerAuth {
     send_sct: bool,
 }
 
-impl rustls::ServerCertVerifier for DummyServerAuth {
+impl rustls::client::ServerCertVerifier for DummyServerAuth {
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::Certificate,
@@ -230,8 +230,8 @@ impl rustls::ServerCertVerifier for DummyServerAuth {
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp: &[u8],
         _now: SystemTime,
-    ) -> Result<rustls::ServerCertVerified, rustls::Error> {
-        Ok(rustls::ServerCertVerified::assertion())
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
     }
 
     fn request_scts(&self) -> bool {
@@ -261,11 +261,11 @@ impl rustls::sign::SigningKey for FixedSignatureSchemeSigningKey {
 }
 
 struct FixedSignatureSchemeServerCertResolver {
-    resolver: Arc<dyn rustls::ResolvesServerCert>,
+    resolver: Arc<dyn rustls::server::ResolvesServerCert>,
     scheme: rustls::SignatureScheme,
 }
 
-impl rustls::ResolvesServerCert for FixedSignatureSchemeServerCertResolver {
+impl rustls::server::ResolvesServerCert for FixedSignatureSchemeServerCertResolver {
     fn resolve(&self, client_hello: ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
         let mut certkey = self.resolver.resolve(client_hello)?;
         Arc::make_mut(&mut certkey).key = Arc::new(FixedSignatureSchemeSigningKey {
@@ -277,11 +277,11 @@ impl rustls::ResolvesServerCert for FixedSignatureSchemeServerCertResolver {
 }
 
 struct FixedSignatureSchemeClientCertResolver {
-    resolver: Arc<dyn rustls::ResolvesClientCert>,
+    resolver: Arc<dyn rustls::client::ResolvesClientCert>,
     scheme: rustls::SignatureScheme,
 }
 
-impl rustls::ResolvesClientCert for FixedSignatureSchemeClientCertResolver {
+impl rustls::client::ResolvesClientCert for FixedSignatureSchemeClientCertResolver {
     fn resolve(
         &self,
         acceptable_issuers: &[&[u8]],
@@ -344,7 +344,7 @@ fn make_server_cfg(opts: &Options) -> Arc<rustls::ServerConfig> {
                 mandatory: opts.require_any_client_cert,
             })
         } else {
-            rustls::NoClientAuth::new()
+            rustls::server::NoClientAuth::new()
         };
 
     let cert = load_cert(&opts.cert_file);
@@ -373,7 +373,7 @@ fn make_server_cfg(opts: &Options) -> Arc<rustls::ServerConfig> {
         )
         .unwrap();
 
-    cfg.session_storage = rustls::ServerSessionMemoryCache::new(32);
+    cfg.session_storage = rustls::server::ServerSessionMemoryCache::new(32);
     cfg.max_fragment_size = opts.max_fragment;
 
     if opts.use_signing_scheme > 0 {
@@ -387,7 +387,7 @@ fn make_server_cfg(opts: &Options) -> Arc<rustls::ServerConfig> {
     if opts.tickets {
         cfg.ticketer = rustls::Ticketer::new().unwrap();
     } else if opts.resumes == 0 {
-        cfg.session_storage = Arc::new(rustls::NoServerSessionStorage {});
+        cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
     }
 
     if !opts.protocols.is_empty() {
@@ -401,17 +401,17 @@ fn make_server_cfg(opts: &Options) -> Arc<rustls::ServerConfig> {
     Arc::new(cfg)
 }
 
-struct ClientCacheWithoutKxHints(Arc<rustls::ClientSessionMemoryCache>);
+struct ClientCacheWithoutKxHints(Arc<rustls::client::ClientSessionMemoryCache>);
 
 impl ClientCacheWithoutKxHints {
     fn new() -> Arc<ClientCacheWithoutKxHints> {
         Arc::new(ClientCacheWithoutKxHints(
-            rustls::ClientSessionMemoryCache::new(32),
+            rustls::client::ClientSessionMemoryCache::new(32),
         ))
     }
 }
 
-impl rustls::StoresClientSessions for ClientCacheWithoutKxHints {
+impl rustls::client::StoresClientSessions for ClientCacheWithoutKxHints {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         if key.len() > 2 && key[0] == b'k' && key[1] == b'x' {
             true
