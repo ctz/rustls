@@ -1,0 +1,3 @@
+# if using `cargo test`
+[dependencies.test]
+stage = 1
