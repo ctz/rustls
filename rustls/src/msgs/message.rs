@@ -116,6 +116,10 @@ impl OpaqueMessage {
         buf
     }
 
+    /// Force conversion into a plaintext message.
+    ///
+    /// This should only be used for messages that are known to be in plaintext. Otherwise, the
+    /// `OpaqueMessage` should be decrypted into a `PlainMessage` using a `MessageDecrypter`.
     pub fn into_plain_message(self) -> PlainMessage {
         PlainMessage {
             version: self.version,
@@ -220,6 +224,10 @@ impl Message {
     }
 }
 
+/// Parses a plaintext message into a well-typed [`Message`].
+///
+/// A [`PlainMessage`] must contain plaintext content. Encrypted content should be stored in an
+/// [`OpaqueMessage`] and decrypted before being stored into a [`PlainMessage`].
 impl TryFrom<PlainMessage> for Message {
     type Error = Error;
 
