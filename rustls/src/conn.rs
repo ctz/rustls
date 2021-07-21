@@ -16,6 +16,7 @@ use crate::msgs::message::{
     BorrowedPlainMessage, Message, MessagePayload, OpaqueMessage, PlainMessage,
 };
 use crate::prf;
+#[cfg(feature = "quic")]
 use crate::quic;
 use crate::record_layer;
 use crate::suites::{SupportedCipherSuite, Tls12CipherSuite};
@@ -26,6 +27,148 @@ use ring::digest::Digest;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::io;
+use std::mem;
+use std::ops::{Deref, DerefMut};
+
+/// A client or server connection.
+pub enum Connection {
+    /// A client connection
+    Client(crate::client::ClientConnection),
+    /// A server connection
+    Server(crate::server::ServerConnection),
+}
+
+impl Connection {
+    /// Read TLS content from `rd`.
+    ///
+    /// See [`ConnectionCommon::read_tls()`] for more information.
+    pub fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
+        match self {
+            Connection::Client(conn) => conn.read_tls(rd),
+            Connection::Server(conn) => conn.read_tls(rd),
+        }
+    }
+
+    /// Returns an object that allows reading plaintext.
+    pub fn reader(&mut self) -> Reader {
+        match self {
+            Connection::Client(conn) => conn.reader(),
+            Connection::Server(conn) => conn.reader(),
+        }
+    }
+
+    /// Returns an object that allows writing plaintext.
+    pub fn writer(&mut self) -> Writer {
+        match self {
+            Connection::Client(conn) => Writer::new(&mut **conn),
+            Connection::Server(conn) => Writer::new(&mut **conn),
+        }
+    }
+
+    /// Processes any new packets read by a previous call to [`Connection::read_tls`].
+    ///
+    /// See [`ConnectionCommon::process_new_packets()`] for more information.
+    pub fn process_new_packets(&mut self) -> Result<IoState, Error> {
+        match self {
+            Connection::Client(conn) => conn.process_new_packets(),
+            Connection::Server(conn) => conn.process_new_packets(),
+        }
+    }
+
+    /// Derives key material from the agreed connection secrets.
+    ///
+    /// See [`ConnectionCommon::export_keying_material()`] for more information.
+    pub fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        match self {
+            Connection::Client(conn) => conn.export_keying_material(output, label, context),
+            Connection::Server(conn) => conn.export_keying_material(output, label, context),
+        }
+    }
+
+    /// This function uses `io` to complete any outstanding IO for this connection.
+    ///
+    /// See [`ConnectionCommon::complete_io()`] for more information.
+    pub fn complete_io<T>(&mut self, io: &mut T) -> Result<(usize, usize), io::Error>
+    where
+        Self: Sized,
+        T: io::Read + io::Write,
+    {
+        match self {
+            Connection::Client(conn) => conn.complete_io(io),
+            Connection::Server(conn) => conn.complete_io(io),
+        }
+    }
+}
+
+impl Deref for Connection {
+    type Target = CommonState;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Connection::Client(conn) => &conn.common_state,
+            Connection::Server(conn) => &conn.common_state,
+        }
+    }
+}
+
+impl DerefMut for Connection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Connection::Client(conn) => &mut conn.common_state,
+            Connection::Server(conn) => &mut conn.common_state,
+        }
+    }
+}
+
+#[cfg(feature = "quic")]
+impl crate::quic::QuicExt for Connection {
+    fn quic_transport_parameters(&self) -> Option<&[u8]> {
+        match self {
+            Connection::Client(conn) => conn.quic_transport_parameters(),
+            Connection::Server(conn) => conn.quic_transport_parameters(),
+        }
+    }
+
+    fn zero_rtt_keys(&self) -> Option<quic::DirectionalKeys> {
+        match self {
+            Connection::Client(conn) => conn.zero_rtt_keys(),
+            Connection::Server(conn) => conn.zero_rtt_keys(),
+        }
+    }
+
+    fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
+        match self {
+            Connection::Client(conn) => conn.read_quic_hs(plaintext),
+            Connection::Server(conn) => conn.read_quic_hs(plaintext),
+        }
+    }
+
+    fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<quic::Keys> {
+        match self {
+            Connection::Client(conn) => quic::write_hs(conn, buf),
+            Connection::Server(conn) => quic::write_hs(conn, buf),
+        }
+    }
+
+    fn alert(&self) -> Option<AlertDescription> {
+        match self {
+            Connection::Client(conn) => conn.alert(),
+            Connection::Server(conn) => conn.alert(),
+        }
+    }
+
+    fn next_1rtt_keys(&mut self) -> Option<quic::PacketKeySet> {
+        match self {
+            Connection::Client(conn) => quic::next_1rtt_keys(conn),
+            Connection::Server(conn) => quic::next_1rtt_keys(conn),
+        }
+    }
+}
 
 /// Values of this structure are returned from [`Connection::process_new_packets`]
 /// and tell the caller the current I/O state of the TLS connection.
@@ -37,8 +180,8 @@ pub struct IoState {
 }
 
 impl IoState {
-    /// How many bytes could be written by [`Connection::write_tls`] if called
-    /// right now.  A non-zero value implies [`Connection::wants_write`].
+    /// How many bytes could be written by [`CommonState::write_tls`] if called
+    /// right now.  A non-zero value implies [`CommonState::wants_write`].
     pub fn tls_bytes_to_write(&self) -> usize {
         self.tls_bytes_to_write
     }
@@ -64,7 +207,8 @@ impl IoState {
 
 /// A structure that implements [`std::io::Read`] for reading plaintext.
 pub struct Reader<'a> {
-    common: &'a mut ConnectionCommon,
+    received_plaintext: &'a mut ChunkVecBuffer,
+    connection_at_eof: bool,
 }
 
 impl<'a> io::Read for Reader<'a> {
@@ -85,7 +229,17 @@ impl<'a> io::Read for Reader<'a> {
     /// You may learn the number of bytes available at any time by inspecting
     /// the return of [`Connection::process_new_packets`].
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.common.read(buf)
+        let len = self.received_plaintext.read(buf)?;
+        if len == 0 && !buf.is_empty() {
+            // no bytes available:
+            // - if we received a close_notify, this is a genuine permanent EOF
+            // - otherwise say EWOULDBLOCK
+            if !self.connection_at_eof {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+        }
+
+        Ok(len)
     }
 }
 
@@ -95,6 +249,24 @@ pub trait PlaintextSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize>;
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize>;
     fn flush(&mut self) -> io::Result<()>;
+}
+
+impl<T> PlaintextSink for ConnectionCommon<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(self.send_some_plaintext(buf))
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        let mut sz = 0;
+        for buf in bufs {
+            sz += self.send_some_plaintext(buf);
+        }
+        Ok(sz)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A structure that implements [`std::io::Write`] for writing plaintext.
@@ -116,12 +288,12 @@ impl<'a> Writer<'a> {
 impl<'a> io::Write for Writer<'a> {
     /// Send the plaintext `buf` to the peer, encrypting
     /// and authenticating it.  Once this function succeeds
-    /// you should call [`Connection::write_tls`] which will output the
+    /// you should call [`CommonState::write_tls`] which will output the
     /// corresponding TLS records.
     ///
     /// This function buffers plaintext sent before the
     /// TLS handshake completes, and sends it as soon
-    /// as it can.  See [`Connection::set_buffer_limit`] to control
+    /// as it can.  See [`CommonState::set_buffer_limit`] to control
     /// the size of this buffer.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.sink.write(buf)
@@ -133,258 +305,6 @@ impl<'a> io::Write for Writer<'a> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.sink.flush()
-    }
-}
-
-/// Generalises `ClientConnection` and `ServerConnection`
-pub trait Connection: quic::QuicExt + Send + Sync {
-    /// Read TLS content from `rd`.  This method does internal
-    /// buffering, so `rd` can supply TLS messages in arbitrary-
-    /// sized chunks (like a socket or pipe might).
-    ///
-    /// You should call [`process_new_packets`] each time a call to
-    /// this function succeeds.
-    ///
-    /// The returned error only relates to IO on `rd`.  TLS-level
-    /// errors are emitted from [`process_new_packets`].
-    ///
-    /// This function returns `Ok(0)` when the underlying `rd` does
-    /// so.  This typically happens when a socket is cleanly closed,
-    /// or a file is at EOF.
-    ///
-    /// [`process_new_packets`]: Connection::process_new_packets
-    fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error>;
-
-    /// Writes TLS messages to `wr`.
-    ///
-    /// On success the function returns `Ok(n)` where `n` is a number
-    /// of bytes written to `wr`, number of bytes after encoding and
-    /// encryption.
-    ///
-    /// Note that after function return the connection buffer maybe not
-    /// yet fully flushed. [`Connection::wants_write`] function can be used
-    /// to check if output buffer is not empty.
-    fn write_tls(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error>;
-
-    /// Returns an object that allows reading plaintext.
-    fn reader(&mut self) -> Reader;
-
-    /// Returns an object that allows writing plaintext.
-    fn writer(&mut self) -> Writer;
-
-    /// Processes any new packets read by a previous call to
-    /// [`Connection::read_tls`].
-    ///
-    /// Errors from this function relate to TLS protocol errors, and
-    /// are fatal to the connection.  Future calls after an error will do
-    /// no new work and will return the same error. After an error is
-    /// received from [`process_new_packets`], you should not call [`read_tls`]
-    /// any more (it will fill up buffers to no purpose). However, you
-    /// may call the other methods on the connection, including `write`,
-    /// `send_close_notify`, and `write_tls`. Most likely you will want to
-    /// call `write_tls` to send any alerts queued by the error and then
-    /// close the underlying connection.
-    ///
-    /// Success from this function comes with some sundry state data
-    /// about the connection.
-    ///
-    /// [`read_tls`]: Connection::read_tls
-    /// [`process_new_packets`]: Connection::process_new_packets
-    fn process_new_packets(&mut self) -> Result<IoState, Error>;
-
-    /// Returns true if the caller should call [`Connection::read_tls`] as soon
-    /// as possible.
-    ///
-    /// If there is pending plaintext data to read with [`Connection::reader`],
-    /// this returns false.  If your application respects this mechanism,
-    /// only one full TLS message will be buffered by rustls.
-    fn wants_read(&self) -> bool;
-
-    /// Returns true if the caller should call [`Connection::write_tls`] as soon
-    /// as possible.
-    fn wants_write(&self) -> bool;
-
-    /// Returns true if the connection is currently performing the TLS handshake.
-    ///
-    /// During this time plaintext written to the connection is buffered in memory. After
-    /// [`Connection::process_new_packets`] has been called, this might start to return `false`
-    /// while the final handshake packets still need to be extracted from the connection's buffers.
-    fn is_handshaking(&self) -> bool;
-
-    /// Sets a limit on the internal buffers used to buffer
-    /// unsent plaintext (prior to completing the TLS handshake)
-    /// and unsent TLS records.  This limit acts only on application
-    /// data written through [`Connection::writer`].
-    ///
-    /// By default the limit is 64KB.  The limit can be set
-    /// at any time, even if the current buffer use is higher.
-    ///
-    /// [`None`] means no limit applies, and will mean that written
-    /// data is buffered without bound -- it is up to the application
-    /// to appropriately schedule its plaintext and TLS writes to bound
-    /// memory usage.
-    ///
-    /// For illustration: `Some(1)` means a limit of one byte applies:
-    /// [`Connection::writer`] will accept only one byte, encrypt it and
-    /// add a TLS header.  Once this is sent via [`Connection::write_tls`],
-    /// another byte may be sent.
-    ///
-    /// # Internal write-direction buffering
-    /// rustls has two buffers whose size are bounded by this setting:
-    ///
-    /// ## Buffering of unsent plaintext data prior to handshake completion
-    ///
-    /// Calls to [`Connection::writer`] before or during the handshake
-    /// are buffered (up to the limit specified here).  Once the
-    /// handshake completes this data is encrypted and the resulting
-    /// TLS records are added to the outgoing buffer.
-    ///
-    /// ## Buffering of outgoing TLS records
-    ///
-    /// This buffer is used to store TLS records that rustls needs to
-    /// send to the peer.  It is used in these two circumstances:
-    ///
-    /// - by [`Connection::process_new_packets`] when a handshake or alert
-    ///   TLS record needs to be sent.
-    /// - by [`Connection::writer`] post-handshake: the plaintext is
-    ///   encrypted and the resulting TLS record is buffered.
-    ///
-    /// This buffer is emptied by [`Connection::write_tls`].
-    fn set_buffer_limit(&mut self, limit: Option<usize>);
-
-    /// Queues a close_notify warning alert to be sent in the next
-    /// [`Connection::write_tls`] call.  This informs the peer that the
-    /// connection is being closed.
-    fn send_close_notify(&mut self);
-
-    /// Retrieves the certificate chain used by the peer to authenticate.
-    ///
-    /// The order of the certificate chain is as it appears in the TLS
-    /// protocol: the first certificate relates to the peer, the
-    /// second certifies the first, the third certifies the second, and
-    /// so on.
-    ///
-    /// This is made available for both full and resumed handshakes.
-    ///
-    /// For clients, this is the certificate chain of the server.
-    ///
-    /// For servers, this is the certificate chain of the client,
-    /// if client authentication was completed.
-    ///
-    /// The return value is None until this value is available.
-    fn peer_certificates(&self) -> Option<&[key::Certificate]>;
-
-    /// Retrieves the protocol agreed with the peer via ALPN.
-    ///
-    /// A return value of `None` after handshake completion
-    /// means no protocol was agreed (because no protocols
-    /// were offered or accepted by the peer).
-    fn alpn_protocol(&self) -> Option<&[u8]>;
-
-    /// Retrieves the protocol version agreed with the peer.
-    ///
-    /// This returns `None` until the version is agreed.
-    fn protocol_version(&self) -> Option<ProtocolVersion>;
-
-    /// Derives key material from the agreed connection secrets.
-    ///
-    /// This function fills in `output` with `output.len()` bytes of key
-    /// material derived from the master session secret using `label`
-    /// and `context` for diversification.
-    ///
-    /// See RFC5705 for more details on what this does and is for.
-    ///
-    /// For TLS1.3 connections, this function does not use the
-    /// "early" exporter at any point.
-    ///
-    /// This function fails if called prior to the handshake completing;
-    /// check with [`Connection::is_handshaking`] first.
-    fn export_keying_material(
-        &self,
-        output: &mut [u8],
-        label: &[u8],
-        context: Option<&[u8]>,
-    ) -> Result<(), Error>;
-
-    /// Retrieves the ciphersuite agreed with the peer.
-    ///
-    /// This returns None until the ciphersuite is agreed.
-    fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite>;
-
-    /// This function uses `io` to complete any outstanding IO for
-    /// this connection.
-    ///
-    /// This is a convenience function which solely uses other parts
-    /// of the public API.
-    ///
-    /// What this means depends on the connection  state:
-    ///
-    /// - If the connection [`is_handshaking`], then IO is performed until
-    ///   the handshake is complete.
-    /// - Otherwise, if [`wants_write`] is true, [`write_tls`] is invoked
-    ///   until it is all written.
-    /// - Otherwise, if [`wants_read`] is true, [`read_tls`] is invoked
-    ///   once.
-    ///
-    /// The return value is the number of bytes read from and written
-    /// to `io`, respectively.
-    ///
-    /// This function will block if `io` blocks.
-    ///
-    /// Errors from TLS record handling (i.e., from [`process_new_packets`])
-    /// are wrapped in an `io::ErrorKind::InvalidData`-kind error.
-    ///
-    /// [`is_handshaking`]: Connection::is_handshaking
-    /// [`wants_read`]: Connection::wants_read
-    /// [`wants_write`]: Connection::wants_write
-    /// [`write_tls`]: Connection::write_tls
-    /// [`read_tls`]: Connection::read_tls
-    /// [`process_new_packets`]: Connection::process_new_packets
-    fn complete_io<T>(&mut self, io: &mut T) -> Result<(usize, usize), io::Error>
-    where
-        Self: Sized,
-        T: io::Read + io::Write,
-    {
-        let until_handshaked = self.is_handshaking();
-        let mut eof = false;
-        let mut wrlen = 0;
-        let mut rdlen = 0;
-
-        loop {
-            while self.wants_write() {
-                wrlen += self.write_tls(io)?;
-            }
-
-            if !until_handshaked && wrlen > 0 {
-                return Ok((rdlen, wrlen));
-            }
-
-            if !eof && self.wants_read() {
-                match self.read_tls(io)? {
-                    0 => eof = true,
-                    n => rdlen += n,
-                }
-            }
-
-            match self.process_new_packets() {
-                Ok(_) => {}
-                Err(e) => {
-                    // In case we have an alert to send describing this error,
-                    // try a last-gasp write -- but don't predate the primary
-                    // error.
-                    let _ignored = self.write_tls(io);
-
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                }
-            };
-
-            match (eof, until_handshaked, self.is_handshaking()) {
-                (_, true, false) => return Ok((rdlen, wrlen)),
-                (_, false, _) => return Ok((rdlen, wrlen)),
-                (true, true, true) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                (..) => {}
-            }
-        }
     }
 }
 
@@ -588,21 +508,350 @@ enum Limit {
     No,
 }
 
-pub(crate) struct ConnectionCommon {
+/// Interface shared by client and server connections.
+pub struct ConnectionCommon<Data> {
+    state: Result<Box<dyn State<Data>>, Error>,
+    pub(crate) data: Data,
+    pub(crate) common_state: CommonState,
+    message_deframer: MessageDeframer,
+    handshake_joiner: HandshakeJoiner,
+}
+
+impl<Data> ConnectionCommon<Data> {
+    pub(crate) fn new(state: Box<dyn State<Data>>, data: Data, common_state: CommonState) -> Self {
+        Self {
+            state: Ok(state),
+            data,
+            common_state,
+            message_deframer: MessageDeframer::new(),
+            handshake_joiner: HandshakeJoiner::new(),
+        }
+    }
+
+    /// Returns an object that allows reading plaintext.
+    pub fn reader(&mut self) -> Reader {
+        Reader {
+            received_plaintext: &mut self.common_state.received_plaintext,
+            /// Are we done? i.e., have we processed all received messages, and received a
+            /// close_notify to indicate that no new messages will arrive?
+            connection_at_eof: self.common_state.peer_eof && !self.message_deframer.has_pending(),
+        }
+    }
+
+    /// Returns an object that allows writing plaintext.
+    pub fn writer(&mut self) -> Writer {
+        Writer::new(self)
+    }
+
+    /// This function uses `io` to complete any outstanding IO for
+    /// this connection.
+    ///
+    /// This is a convenience function which solely uses other parts
+    /// of the public API.
+    ///
+    /// What this means depends on the connection  state:
+    ///
+    /// - If the connection [`is_handshaking`], then IO is performed until
+    ///   the handshake is complete.
+    /// - Otherwise, if [`wants_write`] is true, [`write_tls`] is invoked
+    ///   until it is all written.
+    /// - Otherwise, if [`wants_read`] is true, [`read_tls`] is invoked
+    ///   once.
+    ///
+    /// The return value is the number of bytes read from and written
+    /// to `io`, respectively.
+    ///
+    /// This function will block if `io` blocks.
+    ///
+    /// Errors from TLS record handling (i.e., from [`process_new_packets`])
+    /// are wrapped in an `io::ErrorKind::InvalidData`-kind error.
+    ///
+    /// [`is_handshaking`]: CommonState::is_handshaking
+    /// [`wants_read`]: CommonState::wants_read
+    /// [`wants_write`]: CommonState::wants_write
+    /// [`write_tls`]: CommonState::write_tls
+    /// [`read_tls`]: ConnectionCommon::read_tls
+    /// [`process_new_packets`]: ConnectionCommon::process_new_packets
+    pub fn complete_io<T>(&mut self, io: &mut T) -> Result<(usize, usize), io::Error>
+    where
+        Self: Sized,
+        T: io::Read + io::Write,
+    {
+        let until_handshaked = self.is_handshaking();
+        let mut eof = false;
+        let mut wrlen = 0;
+        let mut rdlen = 0;
+
+        loop {
+            while self.wants_write() {
+                wrlen += self.write_tls(io)?;
+            }
+
+            if !until_handshaked && wrlen > 0 {
+                return Ok((rdlen, wrlen));
+            }
+
+            if !eof && self.wants_read() {
+                match self.read_tls(io)? {
+                    0 => eof = true,
+                    n => rdlen += n,
+                }
+            }
+
+            match self.process_new_packets() {
+                Ok(_) => {}
+                Err(e) => {
+                    // In case we have an alert to send describing this error,
+                    // try a last-gasp write -- but don't predate the primary
+                    // error.
+                    let _ignored = self.write_tls(io);
+
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                }
+            };
+
+            match (eof, until_handshaked, self.is_handshaking()) {
+                (_, true, false) => return Ok((rdlen, wrlen)),
+                (_, false, _) => return Ok((rdlen, wrlen)),
+                (true, true, true) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                (..) => {}
+            }
+        }
+    }
+
+    fn process_msg(
+        &mut self,
+        msg: OpaqueMessage,
+        state: Box<dyn State<Data>>,
+    ) -> Result<Box<dyn State<Data>>, Error> {
+        // pass message to handshake state machine if any of these are true:
+        // - TLS1.2 (where it's part of the state machine),
+        // - prior to determining the version (it's illegal as a first message)
+        // - if it's not a CCS at all
+        // - if we've finished the handshake
+        if msg.typ == ContentType::ChangeCipherSpec
+            && !self.common_state.traffic
+            && self.common_state.is_tls13()
+        {
+            if self.common_state.received_middlebox_ccs {
+                return Err(Error::PeerMisbehavedError(
+                    "illegal middlebox CCS received".into(),
+                ));
+            } else {
+                self.common_state.received_middlebox_ccs = true;
+                trace!("Dropping CCS");
+                return Ok(state);
+            }
+        }
+
+        // Decrypt if demanded by current state.
+        let msg = match self
+            .common_state
+            .record_layer
+            .is_decrypting()
+        {
+            true => self
+                .common_state
+                .decrypt_incoming(msg)?,
+            false => msg.into_plain_message(),
+        };
+
+        // For handshake messages, we need to join them before parsing
+        // and processing.
+        if self.handshake_joiner.want_message(&msg) {
+            self.handshake_joiner
+                .take_message(msg)
+                .ok_or_else(|| {
+                    self.common_state
+                        .send_fatal_alert(AlertDescription::DecodeError);
+                    Error::CorruptMessagePayload(ContentType::Handshake)
+                })?;
+            return self.process_new_handshake_messages(state);
+        }
+
+        // Now we can fully parse the message payload.
+        let msg = Message::try_from(msg)?;
+
+        // For alerts, we have separate logic.
+        if let MessagePayload::Alert(alert) = &msg.payload {
+            self.common_state.process_alert(alert)?;
+            return Ok(state);
+        }
+
+        self.common_state
+            .process_main_protocol(msg, state, &mut self.data)
+    }
+
+    /// Processes any new packets read by a previous call to
+    /// [`Connection::read_tls`].
+    ///
+    /// Errors from this function relate to TLS protocol errors, and
+    /// are fatal to the connection.  Future calls after an error will do
+    /// no new work and will return the same error. After an error is
+    /// received from [`process_new_packets`], you should not call [`read_tls`]
+    /// any more (it will fill up buffers to no purpose). However, you
+    /// may call the other methods on the connection, including `write`,
+    /// `send_close_notify`, and `write_tls`. Most likely you will want to
+    /// call `write_tls` to send any alerts queued by the error and then
+    /// close the underlying connection.
+    ///
+    /// Success from this function comes with some sundry state data
+    /// about the connection.
+    ///
+    /// [`read_tls`]: Connection::read_tls
+    /// [`process_new_packets`]: Connection::process_new_packets
+    pub fn process_new_packets(&mut self) -> Result<IoState, Error> {
+        let mut state = match mem::replace(&mut self.state, Err(Error::HandshakeNotComplete)) {
+            Ok(state) => state,
+            Err(e) => {
+                self.state = Err(e.clone());
+                return Err(e);
+            }
+        };
+
+        if self.message_deframer.desynced {
+            return Err(Error::CorruptMessage);
+        }
+
+        while let Some(msg) = self.message_deframer.frames.pop_front() {
+            match self.process_msg(msg, state) {
+                Ok(new) => state = new,
+                Err(e) => {
+                    self.state = Err(e.clone());
+                    return Err(e);
+                }
+            }
+        }
+
+        self.state = Ok(state);
+        Ok(self.common_state.current_io_state())
+    }
+
+    #[cfg(feature = "quic")]
+    pub(crate) fn read_quic_hs(&mut self, plaintext: &[u8]) -> Result<(), Error> {
+        let state = match mem::replace(&mut self.state, Err(Error::HandshakeNotComplete)) {
+            Ok(state) => state,
+            Err(e) => {
+                self.state = Err(e.clone());
+                return Err(e);
+            }
+        };
+
+        let msg = PlainMessage {
+            typ: ContentType::Handshake,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(plaintext.to_vec()),
+        };
+
+        if self
+            .handshake_joiner
+            .take_message(msg)
+            .is_none()
+        {
+            self.common_state.quic.alert = Some(AlertDescription::DecodeError);
+            return Err(Error::CorruptMessage);
+        }
+
+        self.process_new_handshake_messages(state)
+            .map(|state| self.state = Ok(state))
+    }
+
+    pub(crate) fn process_new_handshake_messages(
+        &mut self,
+        mut state: Box<dyn State<Data>>,
+    ) -> Result<Box<dyn State<Data>>, Error> {
+        self.common_state.aligned_handshake = self.handshake_joiner.is_empty();
+        while let Some(msg) = self.handshake_joiner.frames.pop_front() {
+            state = self
+                .common_state
+                .process_main_protocol(msg, state, &mut self.data)?;
+        }
+
+        Ok(state)
+    }
+
+    pub(crate) fn send_some_plaintext(&mut self, buf: &[u8]) -> usize {
+        if let Ok(st) = &mut self.state {
+            st.perhaps_write_key_update(&mut self.common_state);
+        }
+        self.common_state
+            .send_some_plaintext(buf)
+    }
+
+    /// Read TLS content from `rd`.  This method does internal
+    /// buffering, so `rd` can supply TLS messages in arbitrary-
+    /// sized chunks (like a socket or pipe might).
+    ///
+    /// You should call [`process_new_packets`] each time a call to
+    /// this function succeeds.
+    ///
+    /// The returned error only relates to IO on `rd`.  TLS-level
+    /// errors are emitted from [`process_new_packets`].
+    ///
+    /// This function returns `Ok(0)` when the underlying `rd` does
+    /// so.  This typically happens when a socket is cleanly closed,
+    /// or a file is at EOF.
+    ///
+    /// [`process_new_packets`]: Connection::process_new_packets
+    pub fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
+        self.message_deframer.read(rd)
+    }
+
+    /// Derives key material from the agreed connection secrets.
+    ///
+    /// This function fills in `output` with `output.len()` bytes of key
+    /// material derived from the master session secret using `label`
+    /// and `context` for diversification.
+    ///
+    /// See RFC5705 for more details on what this does and is for.
+    ///
+    /// For TLS1.3 connections, this function does not use the
+    /// "early" exporter at any point.
+    ///
+    /// This function fails if called prior to the handshake completing;
+    /// check with [`CommonState::is_handshaking`] first.
+    pub fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        match self.state.as_ref() {
+            Ok(st) => st.export_keying_material(output, label, context),
+            Err(e) => Err(e.clone()),
+        }
+    }
+}
+
+impl<T> Deref for ConnectionCommon<T> {
+    type Target = CommonState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common_state
+    }
+}
+
+impl<T> DerefMut for ConnectionCommon<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common_state
+    }
+}
+
+/// Connection state common to both client and server connections.
+pub struct CommonState {
     pub(crate) negotiated_version: Option<ProtocolVersion>,
     pub(crate) is_client: bool,
     pub(crate) record_layer: record_layer::RecordLayer,
     pub(crate) suite: Option<SupportedCipherSuite>,
     pub(crate) alpn_protocol: Option<Vec<u8>>,
-    peer_eof: bool,
+    aligned_handshake: bool,
     pub(crate) traffic: bool,
     pub(crate) early_traffic: bool,
     sent_fatal_alert: bool,
+    peer_eof: bool,
     received_middlebox_ccs: bool,
-    error: Option<Error>,
-    message_deframer: MessageDeframer,
-    pub(crate) handshake_joiner: HandshakeJoiner,
-    pub(crate) message_fragmenter: MessageFragmenter,
+    pub(crate) peer_certificates: Option<Vec<key::Certificate>>,
+    message_fragmenter: MessageFragmenter,
     received_plaintext: ChunkVecBuffer,
     sendable_plaintext: ChunkVecBuffer,
     pub(crate) sendable_tls: ChunkVecBuffer,
@@ -613,150 +862,103 @@ pub(crate) struct ConnectionCommon {
     pub(crate) quic: Quic,
 }
 
-impl ConnectionCommon {
-    pub(crate) fn new(max_fragment_size: Option<usize>, client: bool) -> Result<Self, Error> {
+impl CommonState {
+    pub(crate) fn new(max_fragment_size: Option<usize>, is_client: bool) -> Result<Self, Error> {
         Ok(Self {
             negotiated_version: None,
-            is_client: client,
+            is_client,
             record_layer: record_layer::RecordLayer::new(),
             suite: None,
             alpn_protocol: None,
-            peer_eof: false,
+            aligned_handshake: true,
             traffic: false,
             early_traffic: false,
             sent_fatal_alert: false,
+            peer_eof: false,
             received_middlebox_ccs: false,
-            error: None,
-            message_deframer: MessageDeframer::new(),
-            handshake_joiner: HandshakeJoiner::new(),
+            peer_certificates: None,
             message_fragmenter: MessageFragmenter::new(max_fragment_size)
                 .map_err(|_| Error::BadMaxFragmentSize)?,
-            received_plaintext: ChunkVecBuffer::new(None),
+            received_plaintext: ChunkVecBuffer::new(Some(0)),
             sendable_plaintext: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
             sendable_tls: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
+
             protocol: Protocol::Tcp,
             #[cfg(feature = "quic")]
             quic: Quic::new(),
         })
     }
 
-    pub(crate) fn reader(&mut self) -> Reader {
-        Reader { common: self }
+    /// Returns true if the caller should call [`CommonState::write_tls`] as soon
+    /// as possible.
+    pub fn wants_write(&self) -> bool {
+        !self.sendable_tls.is_empty()
     }
 
-    fn current_io_state(&self) -> IoState {
-        IoState {
-            tls_bytes_to_write: self.sendable_tls.len(),
-            plaintext_bytes_to_read: self.received_plaintext.len(),
-            peer_has_closed: self.peer_eof,
-        }
+    /// Returns true if the connection is currently performing the TLS handshake.
+    ///
+    /// During this time plaintext written to the connection is buffered in memory. After
+    /// [`Connection::process_new_packets`] has been called, this might start to return `false`
+    /// while the final handshake packets still need to be extracted from the connection's buffers.
+    pub fn is_handshaking(&self) -> bool {
+        !self.traffic
+    }
+
+    /// Retrieves the certificate chain used by the peer to authenticate.
+    ///
+    /// The order of the certificate chain is as it appears in the TLS
+    /// protocol: the first certificate relates to the peer, the
+    /// second certifies the first, the third certifies the second, and
+    /// so on.
+    ///
+    /// This is made available for both full and resumed handshakes.
+    ///
+    /// For clients, this is the certificate chain of the server.
+    ///
+    /// For servers, this is the certificate chain of the client,
+    /// if client authentication was completed.
+    ///
+    /// The return value is None until this value is available.
+    pub fn peer_certificates(&self) -> Option<&[key::Certificate]> {
+        self.peer_certificates.as_deref()
+    }
+
+    /// Retrieves the protocol agreed with the peer via ALPN.
+    ///
+    /// A return value of `None` after handshake completion
+    /// means no protocol was agreed (because no protocols
+    /// were offered or accepted by the peer).
+    pub fn alpn_protocol(&self) -> Option<&[u8]> {
+        self.get_alpn_protocol()
+    }
+
+    /// Retrieves the ciphersuite agreed with the peer.
+    ///
+    /// This returns None until the ciphersuite is agreed.
+    pub fn negotiated_cipher_suite(&self) -> Option<SupportedCipherSuite> {
+        self.suite
+    }
+
+    /// Retrieves the protocol version agreed with the peer.
+    ///
+    /// This returns `None` until the version is agreed.
+    pub fn protocol_version(&self) -> Option<ProtocolVersion> {
+        self.negotiated_version
     }
 
     pub(crate) fn is_tls13(&self) -> bool {
         matches!(self.negotiated_version, Some(ProtocolVersion::TLSv1_3))
     }
 
-    fn process_msg(&mut self, msg: OpaqueMessage) -> Result<Option<MessageType>, Error> {
-        // pass message to handshake state machine if any of these are true:
-        // - TLS1.2 (where it's part of the state machine),
-        // - prior to determining the version (it's illegal as a first message)
-        // - if it's not a CCS at all
-        // - if we've finished the handshake
-        if msg.typ == ContentType::ChangeCipherSpec && !self.traffic && self.is_tls13() {
-            if self.received_middlebox_ccs {
-                return Err(Error::PeerMisbehavedError(
-                    "illegal middlebox CCS received".into(),
-                ));
-            } else {
-                self.received_middlebox_ccs = true;
-                trace!("Dropping CCS");
-                return Ok(None);
-            }
-        }
-
-        // Decrypt if demanded by current state.
-        let msg = match self.record_layer.is_decrypting() {
-            true => self.decrypt_incoming(msg)?,
-            false => msg.into_plain_message(),
-        };
-
-        // For handshake messages, we need to join them before parsing
-        // and processing.
-        if self.handshake_joiner.want_message(&msg) {
-            self.handshake_joiner
-                .take_message(msg)
-                .ok_or_else(|| {
-                    self.send_fatal_alert(AlertDescription::DecodeError);
-                    Error::CorruptMessagePayload(ContentType::Handshake)
-                })?;
-            return Ok(Some(MessageType::Handshake));
-        }
-
-        // Now we can fully parse the message payload.
-        let msg = Message::try_from(msg)?;
-
-        // For alerts, we have separate logic.
-        if let MessagePayload::Alert(alert) = &msg.payload {
-            return self.process_alert(alert).map(|()| None);
-        }
-
-        Ok(Some(MessageType::Data(msg)))
-    }
-
-    pub(crate) fn process_new_packets<S: HandleState>(
-        &mut self,
-        state: &mut Option<S>,
-        data: &mut S::Data,
-    ) -> Result<IoState, Error> {
-        if let Some(ref err) = self.error {
-            return Err(err.clone());
-        }
-
-        if self.message_deframer.desynced {
-            return Err(Error::CorruptMessage);
-        }
-
-        while let Some(msg) = self.message_deframer.frames.pop_front() {
-            let result = self
-                .process_msg(msg)
-                .and_then(|val| match val {
-                    Some(MessageType::Handshake) => {
-                        self.process_new_handshake_messages(state, data)
-                    }
-                    Some(MessageType::Data(msg)) => self.process_main_protocol(msg, state, data),
-                    None => Ok(()),
-                });
-
-            if let Err(err) = result {
-                self.error = Some(err.clone());
-                return Err(err);
-            }
-        }
-
-        Ok(self.current_io_state())
-    }
-
-    pub(crate) fn process_new_handshake_messages<S: HandleState>(
-        &mut self,
-        state: &mut Option<S>,
-        data: &mut S::Data,
-    ) -> Result<(), Error> {
-        while let Some(msg) = self.handshake_joiner.frames.pop_front() {
-            self.process_main_protocol(msg, state, data)?;
-        }
-
-        Ok(())
-    }
-
     /// Process `msg`.  First, we get the current state.  Then we ask what messages
     /// that state expects, enforced via `check_message`.  Finally, we ask the handler
     /// to handle the message.
-    fn process_main_protocol<S: HandleState>(
+    fn process_main_protocol<Data>(
         &mut self,
         msg: Message,
-        state: &mut Option<S>,
-        data: &mut S::Data,
-    ) -> Result<(), Error> {
+        mut state: Box<dyn State<Data>>,
+        data: &mut Data,
+    ) -> Result<Box<dyn State<Data>>, Error> {
         // For TLS1.2, outside of the handshake, send rejection alerts for
         // renegotiation requests.  These can occur any time.
         if self.traffic && !self.is_tls13() {
@@ -766,15 +968,15 @@ impl ConnectionCommon {
             };
             if msg.is_handshake_type(reject_ty) {
                 self.send_warning_alert(AlertDescription::NoRenegotiation);
-                return Ok(());
+                return Ok(state);
             }
         }
 
-        let current = state.take().unwrap();
-        match current.handle(msg, data, self) {
+        let mut cx = Context { common: self, data };
+        match state.handle(&mut cx, msg) {
             Ok(next) => {
-                *state = Some(next);
-                Ok(())
+                state = next;
+                Ok(state)
             }
             Err(e @ Error::InappropriateMessage { .. })
             | Err(e @ Error::InappropriateHandshakeMessage { .. }) => {
@@ -785,12 +987,33 @@ impl ConnectionCommon {
         }
     }
 
+    /// Send plaintext application data, fragmenting and
+    /// encrypting it as it goes out.
+    ///
+    /// If internal buffers are too small, this function will not accept
+    /// all the data.
+    pub(crate) fn send_some_plaintext(&mut self, data: &[u8]) -> usize {
+        self.send_plain(data, Limit::Yes)
+    }
+
+    pub(crate) fn send_early_plaintext(&mut self, data: &[u8]) -> usize {
+        debug_assert!(self.early_traffic);
+        debug_assert!(self.record_layer.is_encrypting());
+
+        if data.is_empty() {
+            // Don't send empty fragments.
+            return 0;
+        }
+
+        self.send_appdata_encrypt(data, Limit::Yes)
+    }
+
     // Changing the keys must not span any fragmented handshake
     // messages.  Otherwise the defragmented messages will have
     // been protected with two different record layer protections,
     // which is illegal.  Not mentioned in RFC.
     pub(crate) fn check_aligned_handshake(&mut self) -> Result<(), Error> {
-        if !self.handshake_joiner.is_empty() {
+        if !self.aligned_handshake {
             self.send_fatal_alert(AlertDescription::UnexpectedMessage);
             Err(Error::PeerMisbehavedError(
                 "key epoch or handshake flight with pending fragment".to_string(),
@@ -803,16 +1026,6 @@ impl ConnectionCommon {
     pub(crate) fn illegal_param(&mut self, why: &str) -> Error {
         self.send_fatal_alert(AlertDescription::IllegalParameter);
         Error::PeerMisbehavedError(why.to_string())
-    }
-
-    pub(crate) fn get_suite(&self) -> Option<SupportedCipherSuite> {
-        self.suite
-    }
-
-    pub(crate) fn get_alpn_protocol(&self) -> Option<&[u8]> {
-        self.alpn_protocol
-            .as_ref()
-            .map(AsRef::as_ref)
     }
 
     pub(crate) fn decrypt_incoming(&mut self, encr: OpaqueMessage) -> Result<PlainMessage, Error> {
@@ -828,51 +1041,6 @@ impl ConnectionCommon {
             self.send_fatal_alert(AlertDescription::RecordOverflow);
         }
         rc
-    }
-
-    pub(crate) fn wants_read(&self) -> bool {
-        // We want to read more data all the time, except when we have unprocessed plaintext.
-        // This provides back-pressure to the TCP buffers. We also don't want to read more after
-        // the peer has sent us a close notification.
-        //
-        // In the handshake case we don't have readable plaintext before the handshake has
-        // completed, but also don't want to read if we still have sendable tls.
-        self.received_plaintext.is_empty()
-            && !self.peer_eof
-            && (self.traffic || self.sendable_tls.is_empty())
-    }
-
-    pub(crate) fn set_buffer_limit(&mut self, limit: Option<usize>) {
-        self.sendable_plaintext.set_limit(limit);
-        self.sendable_tls.set_limit(limit);
-    }
-
-    fn process_alert(&mut self, alert: &AlertMessagePayload) -> Result<(), Error> {
-        // Reject unknown AlertLevels.
-        if let AlertLevel::Unknown(_) = alert.level {
-            self.send_fatal_alert(AlertDescription::IllegalParameter);
-        }
-
-        // If we get a CloseNotify, make a note to declare EOF to our
-        // caller.
-        if alert.description == AlertDescription::CloseNotify {
-            self.peer_eof = true;
-            return Ok(());
-        }
-
-        // Warnings are nonfatal for TLS1.2, but outlawed in TLS1.3
-        // (except, for no good reason, user_cancelled).
-        if alert.level == AlertLevel::Warning {
-            if self.is_tls13() && alert.description != AlertDescription::UserCanceled {
-                self.send_fatal_alert(AlertDescription::DecodeError);
-            } else {
-                warn!("TLS alert warning received: {:#?}", alert);
-                return Ok(());
-            }
-        }
-
-        error!("TLS alert received: {:#?}", alert);
-        Err(Error::AlertReceived(alert.description))
     }
 
     /// Fragment `m`, encrypt the fragments, and then queue
@@ -935,43 +1103,15 @@ impl ConnectionCommon {
         self.queue_tls_message(em);
     }
 
-    /// Are we done? i.e., have we processed all received messages,
-    /// and received a close_notify to indicate that no new messages
-    /// will arrive?
-    fn connection_at_eof(&self) -> bool {
-        self.peer_eof && !self.message_deframer.has_pending()
-    }
-
-    /// Read TLS content from `rd`.  This method does internal
-    /// buffering, so `rd` can supply TLS messages in arbitrary-
-    /// sized chunks (like a socket or pipe might).
-    pub(crate) fn read_tls(&mut self, rd: &mut dyn io::Read) -> io::Result<usize> {
-        self.message_deframer.read(rd)
-    }
-
-    pub(crate) fn write_tls(&mut self, wr: &mut dyn io::Write) -> io::Result<usize> {
-        self.sendable_tls.write_to(wr)
-    }
-
-    /// Send plaintext application data, fragmenting and
-    /// encrypting it as it goes out.
+    /// Writes TLS messages to `wr`.
     ///
-    /// If internal buffers are too small, this function will not accept
-    /// all the data.
-    pub(crate) fn send_some_plaintext(&mut self, data: &[u8]) -> usize {
-        self.send_plain(data, Limit::Yes)
-    }
-
-    pub(crate) fn send_early_plaintext(&mut self, data: &[u8]) -> usize {
-        debug_assert!(self.early_traffic);
-        debug_assert!(self.record_layer.is_encrypting());
-
-        if data.is_empty() {
-            // Don't send empty fragments.
-            return 0;
-        }
-
-        self.send_appdata_encrypt(data, Limit::Yes)
+    /// On success, this function returns `Ok(n)` where `n` is a number of bytes written to `wr`
+    /// (after encoding and encryption).
+    ///
+    /// After this function returns, the connection buffer may not yet be fully flushed. The
+    /// [`CommonState::wants_write`] function can be used to check if the output buffer is empty.
+    pub fn write_tls(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error> {
+        self.sendable_tls.write_to(wr)
     }
 
     /// Encrypt and send some plaintext `data`.  `limit` controls
@@ -1007,6 +1147,50 @@ impl ConnectionCommon {
     pub(crate) fn start_traffic(&mut self) {
         self.traffic = true;
         self.flush_plaintext();
+    }
+
+    /// Sets a limit on the internal buffers used to buffer
+    /// unsent plaintext (prior to completing the TLS handshake)
+    /// and unsent TLS records.  This limit acts only on application
+    /// data written through [`Connection::writer`].
+    ///
+    /// By default the limit is 64KB.  The limit can be set
+    /// at any time, even if the current buffer use is higher.
+    ///
+    /// [`None`] means no limit applies, and will mean that written
+    /// data is buffered without bound -- it is up to the application
+    /// to appropriately schedule its plaintext and TLS writes to bound
+    /// memory usage.
+    ///
+    /// For illustration: `Some(1)` means a limit of one byte applies:
+    /// [`Connection::writer`] will accept only one byte, encrypt it and
+    /// add a TLS header.  Once this is sent via [`CommonState::write_tls`],
+    /// another byte may be sent.
+    ///
+    /// # Internal write-direction buffering
+    /// rustls has two buffers whose size are bounded by this setting:
+    ///
+    /// ## Buffering of unsent plaintext data prior to handshake completion
+    ///
+    /// Calls to [`Connection::writer`] before or during the handshake
+    /// are buffered (up to the limit specified here).  Once the
+    /// handshake completes this data is encrypted and the resulting
+    /// TLS records are added to the outgoing buffer.
+    ///
+    /// ## Buffering of outgoing TLS records
+    ///
+    /// This buffer is used to store TLS records that rustls needs to
+    /// send to the peer.  It is used in these two circumstances:
+    ///
+    /// - by [`Connection::process_new_packets`] when a handshake or alert
+    ///   TLS record needs to be sent.
+    /// - by [`Connection::writer`] post-handshake: the plaintext is
+    ///   encrypted and the resulting TLS record is buffered.
+    ///
+    /// This buffer is emptied by [`CommonState::write_tls`].
+    pub fn set_buffer_limit(&mut self, limit: Option<usize>) {
+        self.sendable_plaintext.set_limit(limit);
+        self.sendable_tls.set_limit(limit);
     }
 
     /// Send any buffered plaintext.  Plaintext is buffered if
@@ -1063,21 +1247,6 @@ impl ConnectionCommon {
         self.received_plaintext.append(bytes.0);
     }
 
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let len = self.received_plaintext.read(buf)?;
-
-        if len == 0 && !buf.is_empty() {
-            // no bytes available:
-            // - if we received a close_notify, this is a genuine permanent EOF
-            // - otherwise say EWOULDBLOCK
-            if !self.connection_at_eof() {
-                return Err(io::ErrorKind::WouldBlock.into());
-            }
-        }
-
-        Ok(len)
-    }
-
     pub(crate) fn start_encryption_tls12(&mut self, secrets: &ConnectionSecrets) {
         let (dec, enc) = cipher::new_tls12(secrets);
         self.record_layer
@@ -1097,6 +1266,34 @@ impl ConnectionCommon {
         self.send_warning_alert_no_log(desc);
     }
 
+    fn process_alert(&mut self, alert: &AlertMessagePayload) -> Result<(), Error> {
+        // Reject unknown AlertLevels.
+        if let AlertLevel::Unknown(_) = alert.level {
+            self.send_fatal_alert(AlertDescription::IllegalParameter);
+        }
+
+        // If we get a CloseNotify, make a note to declare EOF to our
+        // caller.
+        if alert.description == AlertDescription::CloseNotify {
+            self.peer_eof = true;
+            return Ok(());
+        }
+
+        // Warnings are nonfatal for TLS1.2, but outlawed in TLS1.3
+        // (except, for no good reason, user_cancelled).
+        if alert.level == AlertLevel::Warning {
+            if self.is_tls13() && alert.description != AlertDescription::UserCanceled {
+                self.send_fatal_alert(AlertDescription::DecodeError);
+            } else {
+                warn!("TLS alert warning received: {:#?}", alert);
+                return Ok(());
+            }
+        }
+
+        error!("TLS alert received: {:#?}", alert);
+        Err(Error::AlertReceived(alert.description))
+    }
+
     pub(crate) fn send_fatal_alert(&mut self, desc: AlertDescription) {
         warn!("Sending fatal alert {:?}", desc);
         debug_assert!(!self.sent_fatal_alert);
@@ -1105,7 +1302,10 @@ impl ConnectionCommon {
         self.sent_fatal_alert = true;
     }
 
-    pub(crate) fn send_close_notify(&mut self) {
+    /// Queues a close_notify warning alert to be sent in the next
+    /// [`CommonState::write_tls`] call.  This informs the peer that the
+    /// connection is being closed.
+    pub fn send_close_notify(&mut self) {
         debug!("Sending warning alert {:?}", AlertDescription::CloseNotify);
         self.send_warning_alert_no_log(AlertDescription::CloseNotify);
     }
@@ -1113,6 +1313,38 @@ impl ConnectionCommon {
     fn send_warning_alert_no_log(&mut self, desc: AlertDescription) {
         let m = Message::build_alert(AlertLevel::Warning, desc);
         self.send_msg(m, self.record_layer.is_encrypting());
+    }
+
+    pub(crate) fn get_alpn_protocol(&self) -> Option<&[u8]> {
+        self.alpn_protocol
+            .as_ref()
+            .map(AsRef::as_ref)
+    }
+
+    /// Returns true if the caller should call [`Connection::read_tls`] as soon
+    /// as possible.
+    ///
+    /// If there is pending plaintext data to read with [`Connection::reader`],
+    /// this returns false.  If your application respects this mechanism,
+    /// only one full TLS message will be buffered by rustls.
+    pub fn wants_read(&self) -> bool {
+        // We want to read more data all the time, except when we have unprocessed plaintext.
+        // This provides back-pressure to the TCP buffers. We also don't want to read more after
+        // the peer has sent us a close notification.
+        //
+        // In the handshake case we don't have readable plaintext before the handshake has
+        // completed, but also don't want to read if we still have sendable tls.
+        self.received_plaintext.is_empty()
+            && !self.peer_eof
+            && (self.traffic || self.sendable_tls.is_empty())
+    }
+
+    fn current_io_state(&self) -> IoState {
+        IoState {
+            tls_bytes_to_write: self.sendable_tls.len(),
+            plaintext_bytes_to_read: self.received_plaintext.len(),
+            peer_has_closed: self.peer_eof,
+        }
     }
 
     pub(crate) fn is_quic(&self) -> bool {
@@ -1125,20 +1357,28 @@ impl ConnectionCommon {
     }
 }
 
-pub(crate) trait HandleState: Sized {
-    type Data;
-
+pub(crate) trait State<Data>: Send + Sync {
     fn handle(
-        self,
+        self: Box<Self>,
+        cx: &mut Context<'_, Data>,
         message: Message,
-        data: &mut Self::Data,
-        common: &mut ConnectionCommon,
-    ) -> Result<Self, Error>;
+    ) -> Result<Box<dyn State<Data>>, Error>;
+
+    fn export_keying_material(
+        &self,
+        _output: &mut [u8],
+        _label: &[u8],
+        _context: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        Err(Error::HandshakeNotComplete)
+    }
+
+    fn perhaps_write_key_update(&mut self, _cx: &mut CommonState) {}
 }
 
-enum MessageType {
-    Handshake,
-    Data(Message),
+pub(crate) struct Context<'a, Data> {
+    pub(crate) common: &'a mut CommonState,
+    pub(crate) data: &'a mut Data,
 }
 
 #[cfg(feature = "quic")]
@@ -1168,5 +1408,8 @@ impl Quic {
         }
     }
 }
+
+/// Data specific to the peer's side (client or server).
+pub trait SideData {}
 
 const DEFAULT_BUFFER_LIMIT: usize = 64 * 1024;

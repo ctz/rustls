@@ -1,6 +1,6 @@
 use crate::check::{check_message, inappropriate_handshake_message, inappropriate_message};
 use crate::cipher;
-use crate::conn::{ConnectionCommon, ConnectionRandoms};
+use crate::conn::{CommonState, ConnectionRandoms, State};
 use crate::error::Error;
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::key_schedule::{
@@ -32,6 +32,7 @@ use crate::{conn::Protocol, msgs::base::PayloadU16, quic};
 use crate::{sign, KeyLog};
 
 use super::hs::ClientContext;
+use super::ClientConnectionData;
 use crate::client::common::ServerCertDetails;
 use crate::client::common::{ClientAuthDetails, ClientHelloDetails};
 use crate::client::{hs, ClientConfig, ServerName};
@@ -185,7 +186,7 @@ pub(super) fn handle_server_hello(
 }
 
 fn validate_server_hello(
-    common: &mut ConnectionCommon,
+    common: &mut CommonState,
     server_hello: &ServerHelloPayload,
 ) -> Result<(), Error> {
     for ext in &server_hello.extensions {
@@ -268,6 +269,7 @@ pub(super) fn prepare_resumption(
     exts: &mut Vec<ClientExtension>,
     doing_retry: bool,
 ) {
+    cx.common.suite = Some(resuming_suite.into());
     cx.data.resumption_ciphersuite = Some(resuming_suite.into());
     // The EarlyData extension MUST be supplied together with the
     // PreSharedKey extension.
@@ -330,7 +332,7 @@ pub(super) fn derive_early_traffic_secret(
     trace!("Starting early data traffic");
 }
 
-pub(super) fn emit_fake_ccs(sent_tls13_fake_ccs: &mut bool, common: &mut ConnectionCommon) {
+pub(super) fn emit_fake_ccs(sent_tls13_fake_ccs: &mut bool, common: &mut CommonState) {
     if common.is_quic() {
         return;
     }
@@ -347,7 +349,7 @@ pub(super) fn emit_fake_ccs(sent_tls13_fake_ccs: &mut bool, common: &mut Connect
 }
 
 fn validate_encrypted_extensions(
-    common: &mut ConnectionCommon,
+    common: &mut CommonState,
     hello: &ClientHelloDetails,
     exts: &EncryptedExtensions,
 ) -> Result<(), Error> {
@@ -388,7 +390,7 @@ struct ExpectEncryptedExtensions {
     hello: ClientHelloDetails,
 }
 
-impl hs::State for ExpectEncryptedExtensions {
+impl State<ClientConnectionData> for ExpectEncryptedExtensions {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let exts = require_handshake_msg!(
             m,
@@ -437,9 +439,11 @@ impl hs::State for ExpectEncryptedExtensions {
                     ));
             }
 
-            cx.data.server_cert_chain = resuming_session
-                .server_cert_chain
-                .clone();
+            cx.common.peer_certificates = Some(
+                resuming_session
+                    .server_cert_chain
+                    .clone(),
+            );
 
             // We *don't* reverify the certificate chain here: resumption is a
             // continuation of the previous session in terms of security policy.
@@ -484,7 +488,7 @@ struct ExpectCertificateOrCertReq {
     may_send_sct_list: bool,
 }
 
-impl hs::State for ExpectCertificateOrCertReq {
+impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         check_message(
             &m,
@@ -534,7 +538,7 @@ struct ExpectCertificateRequest {
     may_send_sct_list: bool,
 }
 
-impl hs::State for ExpectCertificateRequest {
+impl State<ClientConnectionData> for ExpectCertificateRequest {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let certreq = &require_handshake_msg!(
             m,
@@ -622,7 +626,7 @@ struct ExpectCertificate {
     client_auth: Option<ClientAuthDetails>,
 }
 
-impl hs::State for ExpectCertificate {
+impl State<ClientConnectionData> for ExpectCertificate {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let cert_chain = require_handshake_msg!(
             m,
@@ -693,7 +697,7 @@ struct ExpectCertificateVerify {
     client_auth: Option<ClientAuthDetails>,
 }
 
-impl hs::State for ExpectCertificateVerify {
+impl State<ClientConnectionData> for ExpectCertificateVerify {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let cert_verify = require_handshake_msg!(
             m,
@@ -735,7 +739,7 @@ impl hs::State for ExpectCertificateVerify {
             )
             .map_err(|err| hs::send_cert_error_alert(cx.common, err))?;
 
-        cx.data.server_cert_chain = self.server_cert.cert_chain;
+        cx.common.peer_certificates = Some(self.server_cert.cert_chain);
         self.transcript.add_message(&m);
 
         Ok(Box::new(ExpectFinished {
@@ -755,7 +759,7 @@ impl hs::State for ExpectCertificateVerify {
 fn emit_certificate_tls13(
     transcript: &mut HandshakeHash,
     client_auth: &mut ClientAuthDetails,
-    common: &mut ConnectionCommon,
+    common: &mut CommonState,
 ) {
     let context = client_auth
         .auth_context
@@ -789,7 +793,7 @@ fn emit_certificate_tls13(
 fn emit_certverify_tls13(
     transcript: &mut HandshakeHash,
     client_auth: &mut ClientAuthDetails,
-    common: &mut ConnectionCommon,
+    common: &mut CommonState,
 ) -> Result<(), Error> {
     let signer = match client_auth.signer.take() {
         Some(s) => s,
@@ -821,7 +825,7 @@ fn emit_certverify_tls13(
 fn emit_finished_tls13(
     transcript: &mut HandshakeHash,
     verify_data: ring::hmac::Tag,
-    common: &mut ConnectionCommon,
+    common: &mut CommonState,
 ) {
     let verify_data_payload = Payload::new(verify_data.as_ref());
 
@@ -837,7 +841,7 @@ fn emit_finished_tls13(
     common.send_msg(m, true);
 }
 
-fn emit_end_of_early_data_tls13(transcript: &mut HandshakeHash, common: &mut ConnectionCommon) {
+fn emit_end_of_early_data_tls13(transcript: &mut HandshakeHash, common: &mut CommonState) {
     if common.is_quic() {
         return;
     }
@@ -866,7 +870,7 @@ struct ExpectFinished {
     sig_verified: verify::HandshakeSignatureValid,
 }
 
-impl hs::State for ExpectFinished {
+impl State<ClientConnectionData> for ExpectFinished {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let mut st = *self;
         let finished =
@@ -995,7 +999,10 @@ impl ExpectTraffic {
             &SessionID::empty(),
             nst.ticket.0.clone(),
             secret,
-            &cx.data.server_cert_chain,
+            cx.common
+                .peer_certificates
+                .clone()
+                .unwrap_or_default(),
             time_now,
         );
         value.set_times(nst.lifetime, nst.age_add);
@@ -1040,7 +1047,7 @@ impl ExpectTraffic {
 
     fn handle_key_update(
         &mut self,
-        common: &mut ConnectionCommon,
+        common: &mut CommonState,
         kur: &KeyUpdateRequest,
     ) -> Result<(), Error> {
         #[cfg(feature = "quic")]
@@ -1079,7 +1086,7 @@ impl ExpectTraffic {
     }
 }
 
-impl hs::State for ExpectTraffic {
+impl State<ClientConnectionData> for ExpectTraffic {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         match m.payload {
             MessagePayload::ApplicationData(payload) => cx
@@ -1120,7 +1127,7 @@ impl hs::State for ExpectTraffic {
             .export_keying_material(output, label, context)
     }
 
-    fn perhaps_write_key_update(&mut self, common: &mut ConnectionCommon) {
+    fn perhaps_write_key_update(&mut self, common: &mut CommonState) {
         if self.want_write_key_update {
             self.want_write_key_update = false;
             common.send_msg_encrypt(Message::build_key_update_notify().into());
@@ -1139,7 +1146,7 @@ impl hs::State for ExpectTraffic {
 struct ExpectQuicTraffic(ExpectTraffic);
 
 #[cfg(feature = "quic")]
-impl hs::State for ExpectQuicTraffic {
+impl State<ClientConnectionData> for ExpectQuicTraffic {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> hs::NextStateOrError {
         let nst = require_handshake_msg!(
             m,

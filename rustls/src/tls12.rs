@@ -1,11 +1,11 @@
-use crate::conn::ConnectionCommon;
+use crate::conn::CommonState;
 use crate::kx;
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::enums::{AlertDescription, ContentType};
 use crate::Error;
 
 pub(crate) fn decode_ecdh_params<T: Codec>(
-    conn: &mut ConnectionCommon,
+    conn: &mut CommonState,
     kx_params: &[u8],
 ) -> Result<T, Error> {
     decode_ecdh_params_::<T>(kx_params).ok_or_else(|| {

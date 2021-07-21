@@ -1,7 +1,7 @@
 #[cfg(feature = "logging")]
 use crate::bs_debug;
 use crate::check::check_message;
-use crate::conn::{ConnectionCommon, ConnectionRandoms};
+use crate::conn::{CommonState, ConnectionRandoms, State};
 use crate::error::{Error, WebPkiError};
 use crate::hash_hs::HandshakeHashBuffer;
 use crate::key_schedule::KeyScheduleEarly;
@@ -32,44 +32,9 @@ use crate::client::{tls12, tls13, ClientConfig, ClientConnectionData, ServerName
 
 use std::sync::Arc;
 
-pub(super) type NextState = Box<dyn State>;
+pub(super) type NextState = Box<dyn State<ClientConnectionData>>;
 pub(super) type NextStateOrError = Result<NextState, Error>;
-
-pub(super) trait State: Send + Sync {
-    /// Each handle() implementation consumes a whole TLS message, and returns
-    /// either an error or the next state.
-    fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> NextStateOrError;
-
-    fn export_keying_material(
-        &self,
-        _output: &mut [u8],
-        _label: &[u8],
-        _context: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        Err(Error::HandshakeNotComplete)
-    }
-
-    fn perhaps_write_key_update(&mut self, _common: &mut ConnectionCommon) {}
-}
-
-impl crate::conn::HandleState for Box<dyn State> {
-    type Data = ClientConnectionData;
-
-    fn handle(
-        self,
-        message: Message,
-        data: &mut Self::Data,
-        common: &mut ConnectionCommon,
-    ) -> Result<Self, Error> {
-        let mut cx = ClientContext { common, data };
-        self.handle(&mut cx, message)
-    }
-}
-
-pub(super) struct ClientContext<'a> {
-    pub(super) common: &'a mut ConnectionCommon,
-    pub(super) data: &'a mut ClientConnectionData,
-}
+pub(super) type ClientContext<'a> = crate::conn::Context<'a, ClientConnectionData>;
 
 fn find_session(
     server_name: &ServerName,
@@ -478,7 +443,7 @@ pub(super) fn sct_list_is_invalid(scts: &SCTList) -> bool {
     scts.is_empty() || scts.iter().any(|sct| sct.0.is_empty())
 }
 
-impl State for ExpectServerHello {
+impl State<ClientConnectionData> for ExpectServerHello {
     fn handle(mut self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> NextStateOrError {
         let server_hello =
             require_handshake_msg!(m, HandshakeType::ServerHello, HandshakePayload::ServerHello)?;
@@ -784,7 +749,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
     }
 }
 
-impl State for ExpectServerHelloOrHelloRetryRequest {
+impl State<ClientConnectionData> for ExpectServerHelloOrHelloRetryRequest {
     fn handle(self: Box<Self>, cx: &mut ClientContext<'_>, m: Message) -> NextStateOrError {
         check_message(
             &m,
@@ -800,7 +765,7 @@ impl State for ExpectServerHelloOrHelloRetryRequest {
     }
 }
 
-pub(super) fn send_cert_error_alert(common: &mut ConnectionCommon, err: Error) -> Error {
+pub(super) fn send_cert_error_alert(common: &mut CommonState, err: Error) -> Error {
     match err {
         Error::WebPkiError(WebPkiError::BadEncoding, _) => {
             common.send_fatal_alert(AlertDescription::DecodeError);

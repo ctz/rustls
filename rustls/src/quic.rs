@@ -2,12 +2,10 @@
 pub use crate::cipher::Iv;
 use crate::cipher::IvLen;
 pub use crate::client::ClientQuicExt;
-use crate::conn::ConnectionCommon;
+use crate::conn::CommonState;
 use crate::error::Error;
 use crate::key_schedule::hkdf_expand;
-use crate::msgs::base::Payload;
-use crate::msgs::enums::{AlertDescription, ContentType, ProtocolVersion};
-use crate::msgs::message::PlainMessage;
+use crate::msgs::enums::AlertDescription;
 pub use crate::server::ServerQuicExt;
 use crate::suites::{BulkAlgorithm, Tls13CipherSuite, TLS13_AES_128_GCM_SHA256_INTERNAL};
 
@@ -155,23 +153,7 @@ impl Keys {
     }
 }
 
-pub(crate) fn read_hs(this: &mut ConnectionCommon, plaintext: &[u8]) -> Result<(), Error> {
-    if this
-        .handshake_joiner
-        .take_message(PlainMessage {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_3,
-            payload: Payload::new(plaintext.to_vec()),
-        })
-        .is_none()
-    {
-        this.quic.alert = Some(AlertDescription::DecodeError);
-        return Err(Error::CorruptMessage);
-    }
-    Ok(())
-}
-
-pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option<Keys> {
+pub(crate) fn write_hs(this: &mut CommonState, buf: &mut Vec<u8>) -> Option<Keys> {
     while let Some((_, msg)) = this.quic.hs_queue.pop_front() {
         buf.extend_from_slice(&msg);
         if let Some(&(true, _)) = this.quic.hs_queue.front() {
@@ -183,7 +165,7 @@ pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option
     }
 
     let suite = this
-        .get_suite()
+        .suite
         .and_then(|suite| suite.tls13())?;
     if let Some(secrets) = this.quic.hs_secrets.take() {
         return Some(Keys::new(suite, this.is_client, &secrets));
@@ -199,9 +181,9 @@ pub(crate) fn write_hs(this: &mut ConnectionCommon, buf: &mut Vec<u8>) -> Option
     None
 }
 
-pub(crate) fn next_1rtt_keys(this: &mut ConnectionCommon) -> Option<PacketKeySet> {
+pub(crate) fn next_1rtt_keys(this: &mut CommonState) -> Option<PacketKeySet> {
     let suite = this
-        .get_suite()
+        .suite
         .and_then(|suite| suite.tls13())?;
     let secrets = this.quic.traffic_secrets.as_ref()?;
     let next = next_1rtt_secrets(suite.hkdf_algorithm, secrets);

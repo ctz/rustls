@@ -1,4 +1,5 @@
 use crate::client::ServerName;
+use crate::key;
 use crate::msgs::base::{PayloadU8, PayloadU16};
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::enums::{CipherSuite, ProtocolVersion};
@@ -149,7 +150,7 @@ impl ClientSessionValueWithResolvedCipherSuite {
         sessid: &SessionID,
         ticket: Vec<u8>,
         ms: Vec<u8>,
-        server_cert_chain: &CertificatePayload,
+        server_cert_chain: Vec<key::Certificate>,
         time_now: TimeBase,
     ) -> Self {
         Self {
@@ -164,7 +165,7 @@ impl ClientSessionValueWithResolvedCipherSuite {
                 age_add: 0,
                 extended_ms: false,
                 max_early_data_size: 0,
-                server_cert_chain: server_cert_chain.to_owned(),
+                server_cert_chain,
             },
             supported_cipher_suite: cipher_suite,
             time_retrieved: time_now,
@@ -307,7 +308,7 @@ impl ServerSessionValue {
         v: ProtocolVersion,
         cs: CipherSuite,
         ms: Vec<u8>,
-        cert_chain: &Option<CertificatePayload>,
+        client_cert_chain: Option<CertificatePayload>,
         alpn: Option<Vec<u8>>,
         application_data: Vec<u8>,
     ) -> Self {
@@ -317,7 +318,7 @@ impl ServerSessionValue {
             cipher_suite: cs,
             master_secret: PayloadU8::new(ms),
             extended_ms: false,
-            client_cert_chain: cert_chain.clone(),
+            client_cert_chain,
             alpn: alpn.map(PayloadU8::new),
             application_data: PayloadU16::new(application_data),
         }

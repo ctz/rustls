@@ -8,7 +8,7 @@ use criterion::Criterion;
 mod common;
 use crate::common::*;
 
-use rustls::{Connection, ServerConnection};
+use rustls::ServerConnection;
 
 use std::io;
 use std::sync::Arc;

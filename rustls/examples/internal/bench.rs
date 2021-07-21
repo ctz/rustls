@@ -7,18 +7,20 @@ use std::convert::TryInto;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustls;
 use rustls::ClientSessionMemoryCache;
-use rustls::Connection;
 use rustls::NoClientSessionStorage;
 use rustls::NoServerSessionStorage;
 use rustls::ServerSessionMemoryCache;
 use rustls::Ticketer;
 use rustls::{AllowAnyAuthenticatedClient, NoClientAuth, RootCertStore};
 use rustls::{ClientConfig, ClientConnection};
+use rustls::{ConnectionCommon, SideData};
 use rustls::{ServerConfig, ServerConnection};
 
 use rustls_pemfile;
@@ -56,7 +58,13 @@ where
     f64::from(dur)
 }
 
-fn transfer(left: &mut dyn Connection, right: &mut dyn Connection) -> f64 {
+fn transfer<L, R, LS, RS>(left: &mut L, right: &mut R) -> f64
+where
+    L: DerefMut + Deref<Target = ConnectionCommon<LS>>,
+    R: DerefMut + Deref<Target = ConnectionCommon<RS>>,
+    LS: SideData,
+    RS: SideData,
+{
     let mut buf = [0u8; 262144];
     let mut read_time = 0f64;
 
@@ -93,7 +101,11 @@ fn transfer(left: &mut dyn Connection, right: &mut dyn Connection) -> f64 {
     }
 }
 
-fn drain(d: &mut dyn Connection, expect_len: usize) {
+fn drain<C, S>(d: &mut C, expect_len: usize)
+where
+    C: DerefMut + Deref<Target = ConnectionCommon<S>>,
+    S: SideData,
+{
     let mut left = expect_len;
     let mut buf = [0u8; 8192];
     loop {

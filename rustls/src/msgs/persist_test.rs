@@ -31,7 +31,7 @@ fn clientsessionvalue_is_debug() {
         &SessionID::random().unwrap(),
         vec![],
         vec![1, 2, 3],
-        &vec![Certificate(b"abc".to_vec()), Certificate(b"def".to_vec())],
+        vec![Certificate(b"abc".to_vec()), Certificate(b"def".to_vec())],
         TimeBase::now().unwrap(),
     );
     println!("{:?}", csv);
@@ -44,7 +44,7 @@ fn serversessionvalue_is_debug() {
         ProtocolVersion::TLSv1_2,
         CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         vec![1, 2, 3],
-        &None,
+        None,
         None,
         vec![4, 5, 6],
     );

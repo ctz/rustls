@@ -6,7 +6,7 @@
 
 use webpki_roots;
 
-use rustls::{ClientConfig, ClientConnection, Connection, Error, OwnedTrustAnchor, RootCertStore};
+use rustls::{ClientConfig, ClientConnection, Error, OwnedTrustAnchor, RootCertStore};
 use std::convert::TryInto;
 use std::env;
 use std::error::Error as StdError;

@@ -326,7 +326,9 @@ pub use crate::client::ResolvesClientCert;
 pub use crate::client::ServerName;
 pub use crate::client::StoresClientSessions;
 pub use crate::client::{ClientConfig, ClientConnection, WriteEarlyData};
-pub use crate::conn::{Connection, IoState, Reader, Writer};
+pub use crate::conn::{
+    CommonState, Connection, ConnectionCommon, IoState, Reader, SideData, Writer,
+};
 pub use crate::error::Error;
 pub use crate::error::WebPkiError;
 pub use crate::error::WebPkiOp;
@@ -342,7 +344,7 @@ pub use crate::server::handy::ResolvesServerCertUsingSni;
 pub use crate::server::handy::{NoServerSessionStorage, ServerSessionMemoryCache};
 pub use crate::server::StoresServerSessions;
 pub use crate::server::{ClientHello, ProducesTickets, ResolvesServerCert};
-pub use crate::server::{ServerConfig, ServerConnection};
+pub use crate::server::{ServerConfig, ServerConnection, ServerConnectionData};
 pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{
     BulkAlgorithm, SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite, ALL_CIPHER_SUITES,
@@ -393,15 +395,6 @@ pub mod sign;
 #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 /// APIs for implementing QUIC TLS
 pub mod quic;
-
-#[cfg(not(feature = "quic"))]
-// If QUIC support is disabled, just define a private module with an empty
-// trait to allow Connection having QuicExt as a trait bound.
-mod quic {
-    pub trait QuicExt {}
-    impl QuicExt for super::ClientConnection {}
-    impl QuicExt for super::ServerConnection {}
-}
 
 #[cfg(feature = "dangerous_configuration")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dangerous_configuration")))]
